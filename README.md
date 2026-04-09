@@ -1,3 +1,9 @@
+Prompt: Generate Your Own AGENTS.md
+Copy this entire prompt into any AI coding agent (Kiro, Claude Code, Cursor, Copilot, Codex, etc.) while inside your project workspace. It will analyze your codebase and git history to generate a powerful, project-specific AGENTS.md file.
+
+(Note: If the agent truncates its response, run Steps 1-2 first, then ask it to complete Steps 3-4 in a follow-up).
+
+```
 I need you to generate a comprehensive AGENTS.md file for this project. This file will instruct AI coding agents on how to work in this codebase correctly. Follow these steps:
 
 ## Step 1: Analyze the Project
@@ -33,14 +39,12 @@ Run these git commands to study the coding style:
 2. `git log --oneline | wc -l` — check total commit count. If total commits < 50, skip this step entirely and write "Insufficient commit history for style analysis."
 3. Filter out bot authors (dependabot, renovate, github-actions, ci, automation) and use `--no-merges`. If this is a forked repo, use `--first-parent` to exclude upstream history.
 4. Fetch up to 1000 valid commit messages. *(If output exceeds your context window, sample the 500 most recent and 500 oldest, and note the gap.)*
-5. Analyze:
+5. Analyze the messages. **To get accurate counts, use shell tools (`grep`, `awk`, `sort`, `uniq`) rather than counting lines of text in your head.** Calculate:
    - Commit message format (conventional commits? ticket prefixes? terse vs descriptive?)
-   - Most common action verbs with counts
+   - Most common action verbs with exact counts (e.g., "fix: 45, add: 30")
    - Domain keywords frequency — what parts of the codebase are touched most?
    - Style evolution over time (compare oldest 50 vs newest 50 commits)
    - Ticket/issue prefix patterns (Jira, Linear, GitHub issues?)
-   - How many unique tickets worked on
-   - How many PRs merged (grep for "Merge pull request")
    - Date range of contributions
 6. If I provide a GitHub/GitLab profile URL, fetch it and extract: title/role, technical skills, and notable achievements or metrics.
 
@@ -57,7 +61,7 @@ Search the codebase for:
 
 ## Step 4: Generate the AGENTS.md
 
-Structure the file with these exact sections. Target ~350 total lines.
+Structure the file with these exact sections. Target 250-400 total lines.
 
 ### 1. Header (2 lines)
 One-line project description with language, framework, version, and scale (module/package count).
@@ -115,7 +119,7 @@ Write in second-person imperative ("Match this format...", "Follow this pattern.
 - **Commit Format**: The exact format to use, with 3 real examples extracted from the git history. If style evolved, show the current style and note it explicitly.
 - **Code Style**: Specific patterns to follow (null safety, typing, naming, import organization) derived from the most recent commits.
 - **Domain Focus**: Table of areas the developer works on most, based on commit keyword frequency.
-- **Key Features**: List the top 5 tickets/PRs by commit count with one-line descriptions of what was built.
+- **Key Features**: List the top 5 tickets/PRs by commit count with one-line descriptions. Add `[verify: counts]` if you couldn't use shell tools to aggregate.
 
 ## Formatting & Verification Rules
 
@@ -127,3 +131,4 @@ Write in second-person imperative ("Match this format...", "Follow this pattern.
 - Every rule must be grounded in actual codebase evidence. If you didn't see it, don't write it.
 - If a section lacks data, write "No [X] detected" — do not fill space with generic advice.
 - Total file should be 250–400 lines — comprehensive but not bloated.
+```
