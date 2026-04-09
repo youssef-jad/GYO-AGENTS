@@ -1,4 +1,4 @@
-Prompt: Generate Your Own AGENTS.md
+## Prompt: Generate Your Own AGENTS.md
 Copy this entire prompt into any AI coding agent (Kiro, Claude Code, Cursor, Copilot, Codex, etc.) while inside your project workspace. It will analyze your codebase and git history to generate a powerful, project-specific AGENTS.md file.
 
 (Note: If the agent truncates its response, run Steps 1-2 first, then ask it to complete Steps 3-4 in a follow-up).
@@ -39,11 +39,11 @@ Run these git commands to study the coding style:
 2. `git log --oneline | wc -l` — check total commit count. If total commits < 50, skip this step entirely and write "Insufficient commit history for style analysis."
 3. Filter out bot authors (dependabot, renovate, github-actions, ci, automation) and use `--no-merges`. If this is a forked repo, use `--first-parent` to exclude upstream history.
 4. Fetch up to 1000 valid commit messages. *(If output exceeds your context window, sample the 500 most recent and 500 oldest, and note the gap.)*
-5. Analyze the messages. **To get accurate counts, use shell tools (`grep`, `awk`, `sort`, `uniq`) rather than counting lines of text in your head.** Calculate:
+5. Analyze the messages. **To get accurate counts, use shell tools (`grep`, `awk`, `sort`, `uniq`) if you have execution access. If you do not have shell execution access, parse the text but you MUST append `[verify: count]` to any numbers you derive.** Calculate:
    - Commit message format (conventional commits? ticket prefixes? terse vs descriptive?)
    - Most common action verbs with exact counts (e.g., "fix: 45, add: 30")
    - Domain keywords frequency — what parts of the codebase are touched most?
-   - Style evolution over time (compare oldest 50 vs newest 50 commits)
+   - Style evolution over time (compare the first 20% of commits to the last 20% of commits)
    - Ticket/issue prefix patterns (Jira, Linear, GitHub issues?)
    - Date range of contributions
 6. If I provide a GitHub/GitLab profile URL, fetch it and extract: title/role, technical skills, and notable achievements or metrics.
@@ -69,7 +69,7 @@ One-line project description with language, framework, version, and scale (modul
 ### 2. Architecture at a Glance (30–50 lines)
 - ASCII tree of top-level directories with purpose annotations
 - Note any generated code directories that must not be manually edited
-- Describe the anatomy of a typical module/package based on direct observation (include counts of how many modules have each subdirectory to show what's common vs rare)
+- Describe the anatomy of a typical module/package based on direct observation. If you include subdirectory counts, append `[verify: count]` if you cannot verify via shell commands.
 
 ### 3. Docker / Dev Environment (15–25 lines)
 - How to run commands (container exec, Makefile shortcuts, scripts)
@@ -119,7 +119,7 @@ Write in second-person imperative ("Match this format...", "Follow this pattern.
 - **Commit Format**: The exact format to use, with 3 real examples extracted from the git history. If style evolved, show the current style and note it explicitly.
 - **Code Style**: Specific patterns to follow (null safety, typing, naming, import organization) derived from the most recent commits.
 - **Domain Focus**: Table of areas the developer works on most, based on commit keyword frequency.
-- **Key Features**: List the top 5 tickets/PRs by commit count with one-line descriptions. Add `[verify: counts]` if you couldn't use shell tools to aggregate.
+- **Key Features**: Attempt to identify ticket prefixes and list top 5 tickets by commit count. If the ticket prefix format is too inconsistent or difficult to parse reliably, write "Ticket prefix format too varied to aggregate reliably" instead of guessing.
 
 ## Formatting & Verification Rules
 
