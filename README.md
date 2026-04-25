@@ -1,4 +1,32 @@
+## 🚀 MCP Server — Connect Any AI Tool Directly
+
+Instead of copy-pasting prompts, connect the **GYO-AGENTS MCP Server** once and call any prompt programmatically.
+
+```bash
+cd mcp-server && npm install && npm run build
+```
+
+Then add to your tool's MCP config (replace `/ABSOLUTE/PATH/TO/GYO-AGENTS`):
+
+```json
+{
+  "mcpServers": {
+    "gyo-agents": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/GYO-AGENTS/mcp-server/dist/index.js"]
+    }
+  }
+}
+```
+
+**22 tools exposed:** 11 × `get_prompt_*` · `get_digital_twin_profile` · `memorize` · `forget_memory` · `search_memory` · `search_prompts` · `analyze_git_style_on_the_fly` · `get_domain_context` · `validate_api_response` · `check_cache_usage` · `generate_full_agent_context`
+
+📖 Full setup guide → [`mcp-server/README.md`](mcp-server/README.md) · Config snippets → [`examples/mcp-configs/`](examples/mcp-configs/)
+
+---
+
 ## Prompt: Generate Your Own AGENTS.md
+
 Copy this entire prompt into any AI coding agent (Kiro, Claude Code, Cursor, Copilot, Codex, etc.) while inside your project workspace. It will analyze your codebase and git history to generate a powerful, project-specific AGENTS.md file.
 
 (Note: If the agent truncates its response, run Steps 1-2 first, then ask it to complete Steps 3-4 in a follow-up).
