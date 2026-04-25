@@ -1,0 +1,12 @@
+{
+  "name": "Twin Session Reflection",
+  "version": "1.0.0",
+  "description": "When the agent stops, reflect on the session and suggest memories, corrections, or decisions to save. The twin learns passively from every interaction.",
+  "when": {
+    "type": "agentStop"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "The session is ending. Take a moment to reflect on what you learned about this developer:\n\n1. **Corrections**: Did the developer edit, undo, or reject any of your suggestions during this session? If so, call `record_correction` for each one with:\n   - category: what kind of change (naming, style, logic, pattern, simplification, etc.)\n   - agentSuggested: what you originally wrote\n   - developerChose: what they changed it to\n   - lesson: the rule to remember\n\n2. **Preferences**: Did you notice any consistent preferences? (e.g., they always use a certain pattern, prefer certain libraries, have naming conventions). If so, call `memorize` with type 'preference'.\n\n3. **Decisions**: Were any architectural or technical decisions made during this session? If so, call `record_decision` with the context, options, and reasoning.\n\n4. **Mistakes**: Did you make any errors the developer caught? Call `memorize` with type 'mistake' so you don't repeat it.\n\nOnly record things you're reasonably confident about. Quality over quantity. If nothing notable happened, that's fine — skip this."
+  }
+}

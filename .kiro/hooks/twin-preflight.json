@@ -1,0 +1,13 @@
+{
+  "name": "Twin Pre-Flight Check",
+  "version": "1.0.0",
+  "description": "Before writing code, load the developer's correction patterns and behavioral DNA so the agent self-checks against known preferences. Prevents repeating mistakes the developer has already corrected.",
+  "when": {
+    "type": "preToolUse",
+    "toolTypes": ["write"]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "BEFORE writing this code, check the developer's Digital Twin for relevant guidance:\n\n1. Call `get_correction_patterns` to load learned correction patterns. If any patterns match what you're about to write, adjust your code BEFORE writing it.\n\n2. Check if the code you're about to write involves an architectural choice. If so, call `search_decisions` with relevant keywords to see if the developer already has a stance.\n\n3. Keep these patterns in mind as you write. The goal is to produce code the developer WON'T need to correct.\n\nIf no correction patterns or decisions exist yet, proceed normally — the twin is still learning."
+  }
+}

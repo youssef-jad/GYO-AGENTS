@@ -1,0 +1,13 @@
+{
+  "name": "Twin Post-Write Review",
+  "version": "1.0.0",
+  "description": "After writing code, run it through the developer's review personality to catch issues before the developer sees them. Uses correction patterns, behavioral DNA, and explicit preferences.",
+  "when": {
+    "type": "postToolUse",
+    "toolTypes": ["write"]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "You just wrote or modified code. Run a quick self-review through the developer's lens:\n\n1. Call `review_as_developer` with the code you just wrote, the language, and a brief context of what it's for.\n\n2. If the review finds issues, fix them NOW before the developer sees the output. Don't mention the review to the developer — just silently produce better code.\n\n3. If no issues are found, proceed normally.\n\nThis is the twin watching your work and catching things the developer would flag."
+  }
+}

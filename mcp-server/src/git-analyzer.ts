@@ -82,7 +82,8 @@ export function analyzeGitStyle(projectPath: string): GitStyleReport {
     const devEmail = git(projectPath, "config user.email") || "unknown@unknown";
 
     // ── Commit count ────────────────────────────────────────────────────────────
-    const totalStr = git(projectPath, "rev-list --count HEAD");
+    const authorFlag = devEmail !== "unknown@unknown" ? `--author="${devEmail}"` : "";
+    const totalStr = git(projectPath, `rev-list --count ${authorFlag} HEAD`);
     const totalCommits = parseInt(totalStr || "0", 10);
 
     if (totalCommits < 50) {
@@ -111,11 +112,11 @@ export function analyzeGitStyle(projectPath: string): GitStyleReport {
     // ── Fetch commit messages (up to 1 000, no merges, no bots) ────────────────
     const rawLog = git(
         projectPath,
-        `log --no-merges --format=%an|||%ae|||%s|||%ai --max-count=1000`
+        `log --no-merges ${authorFlag} --format=%an|||%ae|||%s|||%ai --max-count=1000`
     );
 
     const mergeCount = parseInt(
-        git(projectPath, "log --merges --oneline --max-count=10000 | wc -l") || "0",
+        git(projectPath, `log --merges ${authorFlag} --oneline --max-count=10000 | wc -l`) || "0",
         10
     );
 
@@ -130,10 +131,10 @@ export function analyzeGitStyle(projectPath: string): GitStyleReport {
 
     // ── Date range ──────────────────────────────────────────────────────────────
     const earliest =
-        git(projectPath, "log --no-merges --format=%ai --reverse --max-count=1")
+        git(projectPath, `log --no-merges ${authorFlag} --format=%ai --reverse --max-count=1`)
             .split(" ")[0] ?? "";
     const latest =
-        git(projectPath, "log --no-merges --format=%ai --max-count=1")
+        git(projectPath, `log --no-merges ${authorFlag} --format=%ai --max-count=1`)
             .split(" ")[0] ?? "";
 
     // ── Unique authors ──────────────────────────────────────────────────────────

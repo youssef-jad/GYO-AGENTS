@@ -1,12 +1,14 @@
-## 🚀 MCP Server — Connect Any AI Tool Directly
+## 🚀 MCP Server: The Developer Digital Twin
 
-Instead of copy-pasting prompts, connect the **GYO-AGENTS MCP Server** once and call any prompt programmatically.
+Instead of copy-pasting prompts, connect the **GYO-AGENTS MCP Server** to any AI tool (Cursor, Claude Code, Cline, Kiro, Windsurf) to instantly transform it into your **Digital Twin**. 
+
+The server provides a global, persistent memory (`~/.gyo-agents/twin-memory.json`) that lives outside of any single repository. AI agents can learn your preferences, save your recurring solutions, and avoid mistakes across all of your projects.
 
 ```bash
 cd mcp-server && npm install && npm run build
 ```
 
-Then add to your tool's MCP config (replace `/ABSOLUTE/PATH/TO/GYO-AGENTS`):
+Add to your tool's MCP config (replace `/ABSOLUTE/PATH/TO/GYO-AGENTS`):
 
 ```json
 {
@@ -19,9 +21,12 @@ Then add to your tool's MCP config (replace `/ABSOLUTE/PATH/TO/GYO-AGENTS`):
 }
 ```
 
-**22 tools exposed:** 11 × `get_prompt_*` · `get_digital_twin_profile` · `memorize` · `forget_memory` · `search_memory` · `search_prompts` · `analyze_git_style_on_the_fly` · `get_domain_context` · `validate_api_response` · `check_cache_usage` · `generate_full_agent_context`
+**22 Tools Exposed:** 
+* **Prompt Tools (11):** Native prompt generators for every major AI coding agent.
+* **Digital Twin Memory (4):** `get_digital_twin_profile`, `memorize`, `forget_memory`, `search_memory` — Teach AI your global preferences.
+* **Intelligence & Validation (7):** `generate_full_agent_context`, `search_prompts`, `analyze_git_style_on_the_fly`, `get_domain_context`, `validate_api_response`, `check_cache_usage`.
 
-📖 Full setup guide → [`mcp-server/README.md`](mcp-server/README.md) · Config snippets → [`examples/mcp-configs/`](examples/mcp-configs/)
+📖 Full setup guide & tool details → [`mcp-server/README.md`](mcp-server/README.md) · Config snippets → [`examples/mcp-configs/`](examples/mcp-configs/)
 
 ---
 

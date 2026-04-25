@@ -1,0 +1,12 @@
+{
+  "name": "Twin Decision Check",
+  "version": "1.0.0",
+  "description": "Before submitting a prompt, check if the task involves a decision the developer has already made. Prevents re-litigating settled choices.",
+  "when": {
+    "type": "promptSubmit"
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Before responding to this prompt, quickly scan for relevant context in the Digital Twin:\n\n1. Does this prompt involve choosing between technologies, patterns, or approaches? If so, call `search_decisions` with relevant keywords to check if the developer already has a recorded decision on this topic. If a decision exists, follow it and mention it.\n\n2. Does this prompt touch a domain the developer has strong preferences about? Call `search_memory` with relevant keywords to check for applicable preferences or known mistakes.\n\n3. If nothing relevant is found, proceed normally.\n\nKeep this check fast — don't let it slow down the response. Only call the tools if the prompt clearly involves a decision or preference area."
+  }
+}

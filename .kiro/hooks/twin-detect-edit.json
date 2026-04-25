@@ -1,0 +1,13 @@
+{
+  "name": "Twin Edit Detection",
+  "version": "1.0.0",
+  "description": "When the developer manually edits a code file, check if it was recently written by the agent. If so, the edit is likely a correction — prompt the agent to learn from it.",
+  "when": {
+    "type": "fileEdited",
+    "patterns": ["**/*.ts", "**/*.tsx", "**/*.js", "**/*.jsx", "**/*.py", "**/*.php", "**/*.rb", "**/*.go", "**/*.rs", "**/*.java", "**/*.kt", "**/*.swift", "**/*.cs"]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "A code file was just edited by the developer. Check if you recently wrote or modified this file during the current session.\n\nIf you DID recently write to this file:\n1. Compare what you wrote vs what the file now contains (the developer's edit).\n2. If the developer changed your output, this is a correction signal. Call `record_correction` with:\n   - category: classify the change (naming, style, logic, pattern, removal, addition, simplification, hardening)\n   - context: what you were trying to do\n   - agentSuggested: the relevant part of what you wrote\n   - developerChose: what the developer changed it to\n   - lesson: what rule should you learn from this\n\nIf you did NOT recently write to this file, ignore this — the developer is just working normally.\n\nBe selective. Only record genuine corrections, not unrelated edits."
+  }
+}
