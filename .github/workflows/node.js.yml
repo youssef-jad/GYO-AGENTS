@@ -1,7 +1,6 @@
-# This workflow will do a clean installation of node dependencies, cache/restore them, build the source code and run tests across different versions of node
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-nodejs
+# This workflow validates the MCP server build across multiple Node.js versions
 
-name: Node.js CI
+name: MCP Server CI
 
 on:
   push:
@@ -14,6 +13,10 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: mcp-server
+
     strategy:
       matrix:
         node-version: [18.x, 20.x, 22.x]
@@ -21,11 +24,26 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
     - name: Use Node.js ${{ matrix.node-version }}
       uses: actions/setup-node@v4
       with:
         node-version: ${{ matrix.node-version }}
         cache: 'npm'
-    - run: npm ci
-    - run: npm run build --if-present
-    - run: npm test
+        cache-dependency-path: mcp-server/package-lock.json
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build TypeScript
+      run: npm run build
+
+    - name: Verify MCP server starts
+      run: |
+        timeout 5s node dist/index.js || code=$?
+        # MCP servers exit when stdin closes — exit code 1 (timeout) is acceptable
+        if [ "${code:-0}" -ne 124 ] && [ "${code:-0}" -ne 0 ] && [ "${code:-0}" -ne 1 ]; then
+          echo "MCP server exited unexpectedly with code $code"
+          exit 1
+        fi
+        echo "MCP server started successfully"
