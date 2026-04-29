@@ -28,6 +28,12 @@ import { twinMemory, MemoryType } from "./twin-memory.js";
 import { learnFromCodebase, formatBehavioralDNA, loadDNA, generateManifesto } from "./behavioral-dna.js";
 import { decisionJournal, formatDecision, formatDecisionList } from "./decision-journal.js";
 import { correctionMap, formatCorrectionPatterns, formatCorrectionStats, type CorrectionCategory } from "./correction-map.js";
+import {
+    takeSnapshot,
+    syncAgentConfig,
+    formatSyncReport,
+    formatSnapshotConfirmation,
+} from "./config-watcher.js";
 
 // ─── Server setup ─────────────────────────────────────────────────────────────
 
@@ -1027,6 +1033,108 @@ server.resource("Digital Twin System Prompt", "gyo-agents://twin-system-prompt",
     };
 });
 
+// ─── snapshot_config ──────────────────────────────────────────────────────────
+
+server.tool(
+    "snapshot_config",
+    [
+        "Capture a baseline snapshot of the current project state and persist it to ~/.gyo-agents/snapshots/.",
+        "",
+        "Call this immediately after generating agent config files (CLAUDE.md, .clinerules, .cursor/rules/, etc.).",
+        "The snapshot records five dimensions of the project at that exact moment:",
+        "  1. Top-level directory structure",
+        "  2. Dependency manifest hashes (package.json, composer.json, go.mod, etc.)",
+        "  3. Git HEAD, commit count, commit style, and top domain keywords",
+        "  4. Which agent config files exist (CLAUDE.md, .clinerules, .windsurfrules, etc.)",
+        "",
+        "Future calls to `sync_agent_config` will diff the live project against this baseline and",
+        "return targeted patch instructions — only the sections that actually changed.",
+        "",
+        "One snapshot per project, keyed by a hash of the absolute path. Re-running overwrites the previous baseline.",
+    ].join("\n"),
+    {
+        projectPath: z
+            .string()
+            .min(1)
+            .describe(
+                "Absolute path to the root of the project. Example: '/Users/you/Development/my-project'"
+            ),
+        label: z
+            .string()
+            .optional()
+            .describe(
+                "Optional human-readable label for this snapshot, e.g. 'after initial generation' or 'v2 rewrite'. Stored for reference."
+            ),
+    },
+    async ({ projectPath, label }) => {
+        try {
+            const snapshot = takeSnapshot(projectPath, label);
+            const text = formatSnapshotConfirmation(snapshot);
+            return { content: [{ type: "text" as const, text }] };
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: `Failed to take snapshot: ${msg}\n\nMake sure the projectPath exists and is accessible.`,
+                }],
+            };
+        }
+    }
+);
+
+// ─── sync_agent_config ────────────────────────────────────────────────────────
+
+server.tool(
+    "sync_agent_config",
+    [
+        "Compare the current project state against the stored baseline snapshot and return a targeted patch report.",
+        "",
+        "This is the core of the Living Config Auto-Updater. It detects meaningful drift across five dimensions:",
+        "  1. New or removed top-level directories → flags stale 'Project Structure' sections",
+        "  2. Changed dependency manifests → flags stale 'Architecture' / 'Essential Commands' sections",
+        "  3. Commit growth (30+ new commits) → flags stale 'Developer Style' section",
+        "  4. Commit style evolution (conventional ↔ freeform, new ticket prefixes) → flags 'Commit Format'",
+        "  5. Domain focus shift (new top commit keywords) → flags 'Domain Focus' table",
+        "",
+        "For each change it produces a 'Suggested Patch': which config files to edit, which section to update,",
+        "and exactly what to do — without requiring a full regeneration unless the changes are too widespread.",
+        "",
+        "Returns '✅ up to date' if nothing meaningful has changed.",
+        "Returns an error message if no snapshot exists yet (call `snapshot_config` first).",
+        "",
+        "Workflow:",
+        "  1. Generate agent configs using any get_prompt_* tool",
+        "  2. Call snapshot_config to establish baseline",
+        "  3. Work on your project (days/weeks later...)",
+        "  4. Call sync_agent_config — get a precise list of what to patch",
+        "  5. Apply patches, then call snapshot_config again to update the baseline",
+    ].join("\n"),
+    {
+        projectPath: z
+            .string()
+            .min(1)
+            .describe(
+                "Absolute path to the root of the project. Must match the path used when snapshot_config was called. Example: '/Users/you/Development/my-project'"
+            ),
+    },
+    async ({ projectPath }) => {
+        try {
+            const report = syncAgentConfig(projectPath);
+            const text = formatSyncReport(report);
+            return { content: [{ type: "text" as const, text }] };
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: `Failed to sync config: ${msg}`,
+                }],
+            };
+        }
+    }
+);
+
 async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
@@ -1046,6 +1154,8 @@ async function main() {
         `  ✦ generate_manifesto — Developer soul narrative\n` +
         `  ✦ get_twin_system_prompt — IDE-agnostic proactive behavior injection\n` +
         `  ✦ update_memory / prune_stale_memories — enhanced memory management\n` +
+        `  ✦ snapshot_config — capture project baseline after generating agent configs\n` +
+        `  ✦ sync_agent_config — detect config drift and get targeted patch suggestions\n` +
         `  ✦ Resources: gyo-agents://tools, gyo-agents://twin-system-prompt`
     );
 }
