@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/youssef-jad-gyo-agents-badge.png)](https://mseep.ai/app/youssef-jad-gyo-agents)
+
 ## 🚀 MCP Server: The Developer Digital Twin
 
 Instead of copy-pasting prompts, connect the **GYO-AGENTS MCP Server** to any AI tool (Cursor, Claude Code, Cline, Kiro, Windsurf) to instantly transform it into your **Digital Twin**. 
