@@ -21,10 +21,13 @@ Add to your tool's MCP config (replace `/ABSOLUTE/PATH/TO/GYO-AGENTS`):
 }
 ```
 
-**22 Tools Exposed:** 
+**MCP tools**
+
 * **Prompt Tools (11):** Native prompt generators for every major AI coding agent.
+* **GYO Guardrails:** Turn a correction into an approved project rule that agents can load and check against their diffs. [Setup and example](mcp-server/README.md#gyo-guardrails)
 * **Digital Twin Memory (4):** `get_digital_twin_profile`, `memorize`, `forget_memory`, `search_memory` — Teach AI your global preferences.
 * **Intelligence & Validation (7):** `generate_full_agent_context`, `search_prompts`, `analyze_git_style_on_the_fly`, `get_domain_context`, `validate_api_response`, `check_cache_usage`.
+* **Living Config Auto-Updater (2):** `snapshot_config`, `sync_agent_config` — Detect and fix config drift without full regeneration.
 
 📖 Full setup guide & tool details → [`mcp-server/README.md`](mcp-server/README.md) · Config snippets → [`examples/mcp-configs/`](examples/mcp-configs/)
 

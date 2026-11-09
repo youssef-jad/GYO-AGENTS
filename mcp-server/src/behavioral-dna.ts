@@ -1,7 +1,8 @@
-import { execSync } from "child_process";
-import { existsSync, readdirSync, statSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { existsSync, readdirSync, lstatSync, readFileSync } from "fs";
 import { join, extname, relative } from "path";
 import { homedir } from "os";
+
+import { JsonStore } from "./json-store.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Behavioral DNA — The "Soul" of the Digital Twin
@@ -69,16 +70,6 @@ export interface BehavioralDNA {
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
 
-const DNA_FILE_NAME = "behavioral-dna.json";
-const DNA_DIR = join(homedir(), ".gyo-agents");
-
-function getDnaFilePath(): string {
-    if (!existsSync(DNA_DIR)) {
-        mkdirSync(DNA_DIR, { recursive: true });
-    }
-    return join(DNA_DIR, DNA_FILE_NAME);
-}
-
 function createEmptyDNA(): BehavioralDNA {
     return {
         version: 1,
@@ -90,21 +81,11 @@ function createEmptyDNA(): BehavioralDNA {
     };
 }
 
+const dnaStore = new JsonStore("behavioral-dna.json", createEmptyDNA);
+
 export function loadDNA(): BehavioralDNA {
-    const path = getDnaFilePath();
-    if (!existsSync(path)) return createEmptyDNA();
-    try {
-        return JSON.parse(readFileSync(path, "utf-8")) as BehavioralDNA;
-    } catch {
-        return createEmptyDNA();
-    }
+    return dnaStore.read();
 }
-
-export function saveDNA(dna: BehavioralDNA): void {
-    dna.lastUpdated = new Date().toISOString();
-    writeFileSync(getDnaFilePath(), JSON.stringify(dna, null, 2), "utf-8");
-}
-
 
 // ─── Code Scanning Helpers ────────────────────────────────────────────────────
 
@@ -121,10 +102,10 @@ function walkCodeFiles(dir: string, maxFiles = 500): string[] {
                 entry === "dist" || entry === "build" || entry === "__pycache__") continue;
             const full = join(current, entry);
             let stat;
-            try { stat = statSync(full); } catch { continue; }
+            try { stat = lstatSync(full); } catch { continue; }
             if (stat.isDirectory()) {
                 recurse(full);
-            } else if (CODE_EXTENSIONS.includes(extname(full))) {
+            } else if (stat.isFile() && CODE_EXTENSIONS.includes(extname(full))) {
                 results.push(full);
             }
         }
@@ -572,7 +553,6 @@ export function learnFromCodebase(projectPath: string): { dna: BehavioralDNA; ne
         throw new Error(`Project path does not exist: ${projectPath}`);
     }
 
-    const dna = loadDNA();
     const signals = analyzeCodeSignals(projectPath);
 
     if (signals.totalFiles === 0) {
@@ -582,64 +562,66 @@ export function learnFromCodebase(projectPath: string): { dna: BehavioralDNA; ne
     const newInstincts = interpretInstincts(signals);
     const newValues = interpretValues(signals);
 
-    // Count changes before merge
-    const allOldTraits = [
-        ...dna.instincts.controlFlow, ...dna.instincts.naming,
-        ...dna.instincts.structure, ...dna.instincts.expressiveness,
-        ...dna.values.tradeoffs, ...dna.values.quality, ...dna.values.complexity,
-    ];
-    const allNewTraits = [
-        ...newInstincts.controlFlow, ...newInstincts.naming,
-        ...newInstincts.structure, ...newInstincts.expressiveness,
-        ...newValues.tradeoffs, ...newValues.quality, ...newValues.complexity,
-    ];
+    return dnaStore.update(dna => {
+        // Count changes before merge
+        const allOldTraits = [
+            ...dna.instincts.controlFlow, ...dna.instincts.naming,
+            ...dna.instincts.structure, ...dna.instincts.expressiveness,
+            ...dna.values.tradeoffs, ...dna.values.quality, ...dna.values.complexity,
+        ];
+        const allNewTraits = [
+            ...newInstincts.controlFlow, ...newInstincts.naming,
+            ...newInstincts.structure, ...newInstincts.expressiveness,
+            ...newValues.tradeoffs, ...newValues.quality, ...newValues.complexity,
+        ];
 
-    const oldSignals = new Set(allOldTraits.map(t => t.signal));
-    const newSignals = new Set(allNewTraits.map(t => t.signal));
-    const newTraitsCount = [...newSignals].filter(s => !oldSignals.has(s)).length;
-    const reinforcedCount = [...newSignals].filter(s => oldSignals.has(s)).length;
+        const oldSignals = new Set(allOldTraits.map(t => t.signal));
+        const newSignals = new Set(allNewTraits.map(t => t.signal));
+        const newTraitsCount = [...newSignals].filter(s => !oldSignals.has(s)).length;
+        const reinforcedCount = [...newSignals].filter(s => oldSignals.has(s)).length;
 
-    // Detect transitions before merge
-    const transitions = detectTransitions(allOldTraits, allNewTraits);
+        // Detect transitions before merge
+        const transitions = detectTransitions(allOldTraits, allNewTraits);
 
-    // Merge
-    dna.instincts.controlFlow = mergeTraits(dna.instincts.controlFlow, newInstincts.controlFlow);
-    dna.instincts.naming = mergeTraits(dna.instincts.naming, newInstincts.naming);
-    dna.instincts.structure = mergeTraits(dna.instincts.structure, newInstincts.structure);
-    dna.instincts.expressiveness = mergeTraits(dna.instincts.expressiveness, newInstincts.expressiveness);
-    dna.values.tradeoffs = mergeTraits(dna.values.tradeoffs, newValues.tradeoffs);
-    dna.values.quality = mergeTraits(dna.values.quality, newValues.quality);
-    dna.values.complexity = mergeTraits(dna.values.complexity, newValues.complexity);
+        // Merge
+        dna.instincts.controlFlow = mergeTraits(dna.instincts.controlFlow, newInstincts.controlFlow);
+        dna.instincts.naming = mergeTraits(dna.instincts.naming, newInstincts.naming);
+        dna.instincts.structure = mergeTraits(dna.instincts.structure, newInstincts.structure);
+        dna.instincts.expressiveness = mergeTraits(dna.instincts.expressiveness, newInstincts.expressiveness);
+        dna.values.tradeoffs = mergeTraits(dna.values.tradeoffs, newValues.tradeoffs);
+        dna.values.quality = mergeTraits(dna.values.quality, newValues.quality);
+        dna.values.complexity = mergeTraits(dna.values.complexity, newValues.complexity);
 
-    // Track growth
-    const snapshot: GrowthSnapshot = {
-        date: new Date().toISOString(),
-        projectPath: relative(homedir(), projectPath) || projectPath,
-        traits: allNewTraits.map(t => ({ signal: t.signal, confidence: t.confidence })),
-    };
-    dna.growth.snapshots.push(snapshot);
-    // Keep last 50 snapshots
-    if (dna.growth.snapshots.length > 50) {
-        dna.growth.snapshots = dna.growth.snapshots.slice(-50);
-    }
-    dna.growth.transitions.push(...transitions);
-    // Keep last 100 transitions
-    if (dna.growth.transitions.length > 100) {
-        dna.growth.transitions = dna.growth.transitions.slice(-100);
-    }
+        // Track growth
+        const snapshot: GrowthSnapshot = {
+            date: new Date().toISOString(),
+            projectPath: relative(homedir(), projectPath) || projectPath,
+            traits: allNewTraits.map(t => ({ signal: t.signal, confidence: t.confidence })),
+        };
+        dna.growth.snapshots.push(snapshot);
+        // Keep last 50 snapshots
+        if (dna.growth.snapshots.length > 50) {
+            dna.growth.snapshots = dna.growth.snapshots.slice(-50);
+        }
+        dna.growth.transitions.push(...transitions);
+        // Keep last 100 transitions
+        if (dna.growth.transitions.length > 100) {
+            dna.growth.transitions = dna.growth.transitions.slice(-100);
+        }
 
-    // Count decayed
-    const allMergedTraits = [
-        ...dna.instincts.controlFlow, ...dna.instincts.naming,
-        ...dna.instincts.structure, ...dna.instincts.expressiveness,
-        ...dna.values.tradeoffs, ...dna.values.quality, ...dna.values.complexity,
-    ];
-    const decayedCount = allOldTraits.length - allMergedTraits.filter(t => oldSignals.has(t.signal)).length;
+        // Count decayed
+        const allMergedTraits = [
+            ...dna.instincts.controlFlow, ...dna.instincts.naming,
+            ...dna.instincts.structure, ...dna.instincts.expressiveness,
+            ...dna.values.tradeoffs, ...dna.values.quality, ...dna.values.complexity,
+        ];
+        const decayedCount = allOldTraits.length - allMergedTraits.filter(t => oldSignals.has(t.signal)).length;
 
-    dna.scanCount++;
-    saveDNA(dna);
+        dna.scanCount++;
+        dna.lastUpdated = new Date().toISOString();
 
-    return { dna, newTraitsCount, reinforcedCount, decayedCount: Math.max(0, decayedCount) };
+        return { dna, newTraitsCount, reinforcedCount, decayedCount: Math.max(0, decayedCount) };
+    });
 }
 
 // ─── Formatting ───────────────────────────────────────────────────────────────

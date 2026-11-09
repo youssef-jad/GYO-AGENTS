@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gyo-agents-mcp guardrail hook",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

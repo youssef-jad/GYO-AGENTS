@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { existsSync } from "fs";
 
 export interface GitStyleReport {
@@ -27,9 +27,9 @@ export interface GitStyleReport {
     warning?: string;
 }
 
-function git(cwd: string, args: string): string {
+function git(cwd: string, args: string[]): string {
     try {
-        return execSync(`git ${args}`, {
+        return execFileSync("git", args, {
             cwd,
             encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
@@ -41,7 +41,7 @@ function git(cwd: string, args: string): string {
 }
 
 function isGitRepo(path: string): boolean {
-    return existsSync(path) && git(path, "rev-parse --is-inside-work-tree") === "true";
+    return existsSync(path) && git(path, ["rev-parse", "--is-inside-work-tree"]) === "true";
 }
 
 type KV = { key: string; count: number };
@@ -78,12 +78,12 @@ export function analyzeGitStyle(projectPath: string): GitStyleReport {
     }
 
     // ── Developer identity ──────────────────────────────────────────────────────
-    const devName = git(projectPath, "config user.name") || "Unknown";
-    const devEmail = git(projectPath, "config user.email") || "unknown@unknown";
+    const devName = git(projectPath, ["config", "user.name"]) || "Unknown";
+    const devEmail = git(projectPath, ["config", "user.email"]) || "unknown@unknown";
 
     // ── Commit count ────────────────────────────────────────────────────────────
-    const authorFlag = devEmail !== "unknown@unknown" ? `--author="${devEmail}"` : "";
-    const totalStr = git(projectPath, `rev-list --count ${authorFlag} HEAD`);
+    const authorFlags = devEmail !== "unknown@unknown" ? ["--fixed-strings", `--author=${devEmail}`] : [];
+    const totalStr = git(projectPath, ["rev-list", "--count", ...authorFlags, "HEAD"]);
     const totalCommits = parseInt(totalStr || "0", 10);
 
     if (totalCommits < 50) {
@@ -112,11 +112,11 @@ export function analyzeGitStyle(projectPath: string): GitStyleReport {
     // ── Fetch commit messages (up to 1 000, no merges, no bots) ────────────────
     const rawLog = git(
         projectPath,
-        `log --no-merges ${authorFlag} --format=%an|||%ae|||%s|||%ai --max-count=1000`
+        ["log", "--no-merges", ...authorFlags, "--format=%an|||%ae|||%s|||%ai", "--max-count=1000"]
     );
 
     const mergeCount = parseInt(
-        git(projectPath, `log --merges ${authorFlag} --oneline --max-count=10000 | wc -l`) || "0",
+        git(projectPath, ["rev-list", "--count", "--merges", ...authorFlags, "--max-count=10000", "HEAD"]) || "0",
         10
     );
 
@@ -131,10 +131,10 @@ export function analyzeGitStyle(projectPath: string): GitStyleReport {
 
     // ── Date range ──────────────────────────────────────────────────────────────
     const earliest =
-        git(projectPath, `log --no-merges ${authorFlag} --format=%ai --reverse --max-count=1`)
+        git(projectPath, ["log", "--no-merges", ...authorFlags, "--format=%ai", "--reverse", "--max-count=1"])
             .split(" ")[0] ?? "";
     const latest =
-        git(projectPath, `log --no-merges ${authorFlag} --format=%ai --max-count=1`)
+        git(projectPath, ["log", "--no-merges", ...authorFlags, "--format=%ai", "--max-count=1"])
             .split(" ")[0] ?? "";
 
     // ── Unique authors ──────────────────────────────────────────────────────────

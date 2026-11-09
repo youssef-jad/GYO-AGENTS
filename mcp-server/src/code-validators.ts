@@ -1,48 +1,63 @@
-import { execSync } from "child_process";
-import { existsSync, readdirSync, statSync, readFileSync } from "fs";
-import { join, relative, extname } from "path";
+import { existsSync, lstatSync, opendirSync, readFileSync, realpathSync, readdirSync } from "fs";
+import { extname, isAbsolute, join, relative, resolve, sep } from "path";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+function isWithin(root: string, path: string): boolean {
+    const difference = relative(root, path);
+    return !isAbsolute(difference) && difference !== ".." && !difference.startsWith(".." + sep);
+}
 
-function safeExec(cmd: string, cwd: string): string {
+function resolveScope(projectPath: string, scope = "."): string {
+    const root = realpathSync(projectPath);
+    const candidate = resolve(root, scope);
+    if (!isWithin(root, candidate)) {
+        throw new Error("Scan scope must stay within the project.");
+    }
+    const actual = realpathSync(candidate);
+    if (!isWithin(root, actual) || !lstatSync(actual).isDirectory()) {
+        throw new Error("Scan scope must be a directory within the project.");
+    }
+    return actual;
+}
+
+function* walkEntries(dir: string, budget = { remaining: 20_000 }): Generator<{ path: string; isFile: boolean }> {
+    let entries;
+    try { entries = opendirSync(dir); } catch { return; }
     try {
-        return execSync(cmd, { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 10_000 }).trim();
-    } catch {
-        return "";
+        while (budget.remaining > 0) {
+            const entry = entries.readSync();
+            if (!entry) break;
+            budget.remaining--;
+            if (entry.name.startsWith(".") || entry.name === "node_modules" || entry.name === "vendor") continue;
+            const path = join(dir, entry.name);
+            if (entry.isFile()) {
+                yield { path, isFile: true };
+            } else if (entry.isDirectory()) {
+                yield { path, isFile: false };
+                yield* walkEntries(path, budget);
+            }
+        }
+    } finally {
+        entries.closeSync();
     }
 }
 
-/** Walk a directory and collect files matching an extension filter. */
 function walkFiles(dir: string, extensions: string[], maxFiles = 5000): string[] {
     const results: string[] = [];
-
-    function recurse(current: string) {
-        if (results.length >= maxFiles) return;
-        let entries: string[];
-        try {
-            entries = readdirSync(current);
-        } catch {
-            return;
-        }
-        for (const entry of entries) {
-            if (entry.startsWith(".") || entry === "node_modules" || entry === "vendor") continue;
-            const full = join(current, entry);
-            let stat;
-            try { stat = statSync(full); } catch { continue; }
-            if (stat.isDirectory()) {
-                recurse(full);
-            } else if (extensions.includes(extname(full))) {
-                results.push(full);
-            }
-        }
+    for (const entry of walkEntries(dir)) {
+        if (!entry.isFile || !extensions.includes(extname(entry.path))) continue;
+        results.push(entry.path);
+        if (results.length >= maxFiles) break;
     }
-
-    recurse(dir);
     return results;
 }
 
 function readFileSafe(path: string): string {
-    try { return readFileSync(path, "utf-8"); } catch { return ""; }
+    try {
+        const stat = lstatSync(path);
+        return stat.isFile() && stat.size <= 1024 * 1024 ? readFileSync(path, "utf-8") : "";
+    } catch {
+        return "";
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -75,6 +90,7 @@ export function getDomainContext(projectPath: string, domain: string): DomainCon
         throw new Error(`Project path does not exist: ${projectPath}`);
     }
 
+    const rootPath = realpathSync(projectPath);
     const domainLower = domain.toLowerCase();
     const domainVariants = [
         domainLower,
@@ -87,8 +103,9 @@ export function getDomainContext(projectPath: string, domain: string): DomainCon
 
     // Module root candidates
     const moduleRoots = ["Modules", "modules", "src/Modules", "app/Modules", "src", "app"]
-        .map((r) => join(projectPath, r))
-        .filter(existsSync);
+        .flatMap((scope) => {
+            try { return [resolveScope(rootPath, scope)]; } catch { return []; }
+        });
 
     const matchedModules: DomainModule[] = [];
 
@@ -101,14 +118,14 @@ export function getDomainContext(projectPath: string, domain: string): DomainCon
             const full = join(root, entry);
 
             let stat;
-            try { stat = statSync(full); } catch { continue; }
+            try { stat = lstatSync(full); } catch { continue; }
             if (!stat.isDirectory()) continue;
 
             // High confidence: directory name IS the domain keyword
             if (domainVariants.some((v) => entryLower === v.toLowerCase())) {
                 matchedModules.push({
                     name: entry,
-                    path: relative(projectPath, full),
+                    path: relative(rootPath, full),
                     confidence: "high",
                     reason: `Directory name matches domain "${domain}" exactly`,
                 });
@@ -119,7 +136,7 @@ export function getDomainContext(projectPath: string, domain: string): DomainCon
             if (domainVariants.some((v) => entryLower.includes(v.toLowerCase()))) {
                 matchedModules.push({
                     name: entry,
-                    path: relative(projectPath, full),
+                    path: relative(rootPath, full),
                     confidence: "medium",
                     reason: `Directory name contains "${domain}"`,
                 });
@@ -136,7 +153,7 @@ export function getDomainContext(projectPath: string, domain: string): DomainCon
             if (hasReference) {
                 matchedModules.push({
                     name: entry,
-                    path: relative(projectPath, full),
+                    path: relative(rootPath, full),
                     confidence: "low",
                     reason: `References "${domain}" in source files`,
                 });
@@ -144,37 +161,37 @@ export function getDomainContext(projectPath: string, domain: string): DomainCon
         }
     }
 
-    // Collect namespaces (grep for namespace declarations)
-    const namespacesRaw = safeExec(
-        `grep -rh --include="*.php" "namespace" . | sort -u | head -30`,
-        projectPath
-    );
-    const namespaces = namespacesRaw
-        .split("\n")
-        .map((l) => l.replace("namespace ", "").replace(";", "").trim())
-        .filter((n) => domainVariants.some((v) => n.toLowerCase().includes(v.toLowerCase())));
-
-    // Collect route files referencing the domain
+    const namespaces = new Set<string>();
     const routeFiles: string[] = [];
-    const routeSearchRaw = safeExec(
-        `grep -rl --include="*.php" "${domain}" routes/ 2>/dev/null || true`,
-        projectPath
-    );
-    if (routeSearchRaw) routeFiles.push(...routeSearchRaw.split("\n").filter(Boolean));
+    const relatedFiles: string[] = [];
+    const routesRoot = join(rootPath, "routes");
+    let phpFilesScanned = 0;
 
-    // Related config/migration files
-    const relatedFilesRaw = safeExec(
-        `find . -name "*${domainLower}*" -o -name "*${domain}*" 2>/dev/null | grep -v ".git" | grep -v "vendor" | head -20`,
-        projectPath
-    );
-    const relatedFiles = relatedFilesRaw.split("\n").filter(Boolean).map((f) => f.replace("./", ""));
+    for (const { path, isFile } of walkEntries(rootPath)) {
+        const localPath = relative(rootPath, path);
+        const name = localPath.split(sep).pop()!;
+        if (relatedFiles.length < 20 && name.toLowerCase().includes(domainLower)) {
+            relatedFiles.push(localPath);
+        }
+        if (!isFile || extname(path) !== ".php" || phpFilesScanned >= 5000) continue;
+        phpFilesScanned++;
+        const source = readFileSafe(path);
+        for (const [, namespace] of source.matchAll(/^\s*namespace\s+([\w\\]+)\s*[;{]/gm)) {
+            if (namespaces.size < 30 && domainVariants.some(v => namespace.toLowerCase().includes(v.toLowerCase()))) {
+                namespaces.add(namespace);
+            }
+        }
+        if (routeFiles.length < 100 && isWithin(routesRoot, path) && source.includes(domain)) {
+            routeFiles.push(localPath);
+        }
+    }
 
     const summary =
         matchedModules.length === 0
             ? `No modules found for domain "${domain}". Check the spelling or try a broader term.`
             : `Found ${matchedModules.length} module(s) for domain "${domain}": ${matchedModules.map((m) => m.name).join(", ")}.`;
 
-    return { domain, projectPath, matchedModules, relatedFiles, namespaces, routeFiles, summary };
+    return { domain, projectPath, matchedModules, relatedFiles, namespaces: [...namespaces], routeFiles, summary };
 }
 
 export function formatDomainContext(result: DomainContextResult): string {
@@ -261,7 +278,8 @@ export function validateApiResponse(projectPath: string, scope?: string): Valida
         throw new Error(`Project path does not exist: ${projectPath}`);
     }
 
-    const searchRoot = scope ? join(projectPath, scope) : projectPath;
+    const rootPath = realpathSync(projectPath);
+    const searchRoot = resolveScope(rootPath, scope);
     const phpFiles = walkFiles(searchRoot, [".php"]);
     const violations: ApiResponseViolation[] = [];
 
@@ -275,7 +293,7 @@ export function validateApiResponse(projectPath: string, scope?: string): Valida
                 pattern.lastIndex = 0; // reset regex
                 if (pattern.test(lineContent)) {
                     violations.push({
-                        file: relative(projectPath, file),
+                        file: relative(rootPath, file),
                         line: idx + 1,
                         snippet: lineContent.trim(),
                         suggestion,
@@ -372,7 +390,8 @@ export function checkCacheUsage(projectPath: string, scope?: string): CheckCache
         throw new Error(`Project path does not exist: ${projectPath}`);
     }
 
-    const searchRoot = scope ? join(projectPath, scope) : projectPath;
+    const rootPath = realpathSync(projectPath);
+    const searchRoot = resolveScope(rootPath, scope);
     const phpFiles = walkFiles(searchRoot, [".php"]);
     const violations: CacheViolation[] = [];
     let correctUsages = 0;
@@ -393,7 +412,7 @@ export function checkCacheUsage(projectPath: string, scope?: string): CheckCache
                 pattern.lastIndex = 0;
                 if (pattern.test(lineContent)) {
                     violations.push({
-                        file: relative(projectPath, file),
+                        file: relative(rootPath, file),
                         line: idx + 1,
                         snippet: lineContent.trim(),
                         type,

@@ -1,6 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
+import { inScope, JsonStore, scopeKey } from "./json-store.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Decision Journal — Why you chose A over B
@@ -38,43 +36,14 @@ export interface DecisionJournalData {
     decisions: Decision[];
 }
 
-const JOURNAL_FILE = "decision-journal.json";
-const JOURNAL_DIR = join(homedir(), ".gyo-agents");
-
-function getJournalPath(): string {
-    if (!existsSync(JOURNAL_DIR)) {
-        mkdirSync(JOURNAL_DIR, { recursive: true });
-    }
-    return join(JOURNAL_DIR, JOURNAL_FILE);
-}
-
 function generateId(): string {
     return "dec-" + Math.random().toString(36).substring(2, 10);
 }
 
 export class DecisionJournal {
-    private data: DecisionJournalData;
-    private filePath: string;
-
-    constructor() {
-        this.filePath = getJournalPath();
-        this.data = this.load();
-    }
-
-    private load(): DecisionJournalData {
-        if (!existsSync(this.filePath)) {
-            return { version: 1, decisions: [] };
-        }
-        try {
-            return JSON.parse(readFileSync(this.filePath, "utf-8")) as DecisionJournalData;
-        } catch {
-            return { version: 1, decisions: [] };
-        }
-    }
-
-    private save(): void {
-        writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), "utf-8");
-    }
+    private readonly store = new JsonStore<DecisionJournalData>("decision-journal.json", () => ({
+        version: 1, decisions: [],
+    }));
 
     public record(input: {
         context: string;
@@ -86,65 +55,63 @@ export class DecisionJournal {
         projectScope?: string | null;
         tags?: string[];
     }): Decision {
-        const now = new Date().toISOString();
-        const decision: Decision = {
-            id: generateId(),
-            date: now,
-            updatedAt: now,
-            context: input.context,
-            domain: input.domain,
-            options: input.options,
-            chosen: input.chosen,
-            reasoning: input.reasoning,
-            consequences: input.consequences ?? [],
-            projectScope: input.projectScope ?? null,
-            tags: input.tags ?? [],
-            status: "active",
-            supersededBy: null,
-        };
-        this.data.decisions.push(decision);
-        this.save();
-        return decision;
+        return this.store.update(data => {
+            const now = new Date().toISOString();
+            const decision: Decision = {
+                id: generateId(),
+                date: now,
+                updatedAt: now,
+                context: input.context,
+                domain: input.domain,
+                options: input.options,
+                chosen: input.chosen,
+                reasoning: input.reasoning,
+                consequences: input.consequences ?? [],
+                projectScope: scopeKey(input.projectScope),
+                tags: input.tags ?? [],
+                status: "active",
+                supersededBy: null,
+            };
+            data.decisions.push(decision);
+            return decision;
+        });
     }
 
     public supersede(oldId: string, newId: string): boolean {
-        const old = this.data.decisions.find(d => d.id === oldId);
-        if (!old) return false;
-        old.status = "superseded";
-        old.supersededBy = newId;
-        old.updatedAt = new Date().toISOString();
-        this.save();
-        return true;
+        return this.store.update(data => {
+            const old = data.decisions.find(d => d.id === oldId);
+            if (!old) return false;
+            old.status = "superseded";
+            old.supersededBy = newId;
+            old.updatedAt = new Date().toISOString();
+            return true;
+        });
     }
 
     public markRevisit(id: string): boolean {
-        const d = this.data.decisions.find(d => d.id === id);
-        if (!d) return false;
-        d.status = "revisit";
-        d.updatedAt = new Date().toISOString();
-        this.save();
-        return true;
+        return this.store.update(data => {
+            const d = data.decisions.find(d => d.id === id);
+            if (!d) return false;
+            d.status = "revisit";
+            d.updatedAt = new Date().toISOString();
+            return true;
+        });
     }
 
     public remove(id: string): boolean {
-        const before = this.data.decisions.length;
-        this.data.decisions = this.data.decisions.filter(d => d.id !== id);
-        if (this.data.decisions.length < before) {
-            this.save();
-            return true;
-        }
-        return false;
+        return this.store.update(data => {
+            const before = data.decisions.length;
+            data.decisions = data.decisions.filter(d => d.id !== id);
+            return data.decisions.length < before;
+        });
     }
 
     /** Search decisions by keyword, domain, or tag. */
     public search(query: string, domain?: string, projectScope?: string): Decision[] {
-        let pool = this.data.decisions.filter(d => d.status === "active");
+        let pool = this.getAll(projectScope).filter(d => d.status === "active");
 
         if (domain) {
             pool = pool.filter(d => d.domain.toLowerCase() === domain.toLowerCase());
-        }
-        if (projectScope) {
-            pool = pool.filter(d => d.projectScope === null || d.projectScope === projectScope);
         }
 
         if (!query.trim()) return pool;
@@ -162,9 +129,9 @@ export class DecisionJournal {
     }
 
     /** Find decisions that might be relevant to a new decision context. */
-    public findRelated(context: string, domain: string): Decision[] {
+    public findRelated(context: string, domain: string, projectScope?: string): Decision[] {
         const contextTerms = context.toLowerCase().split(/\s+/).filter(t => t.length > 3);
-        return this.data.decisions
+        return this.getAll(projectScope)
             .filter(d => d.status === "active")
             .map(d => {
                 let score = 0;
@@ -179,12 +146,13 @@ export class DecisionJournal {
             .map(r => r.decision);
     }
 
-    public getAll(): Decision[] {
-        return this.data.decisions;
+    public getAll(projectScope?: string): Decision[] {
+        const scope = scopeKey(projectScope);
+        return this.store.read().decisions.filter(d => inScope(d.projectScope, scope));
     }
 
     public getById(id: string): Decision | undefined {
-        return this.data.decisions.find(d => d.id === id);
+        return this.store.read().decisions.find(d => d.id === id);
     }
 }
 

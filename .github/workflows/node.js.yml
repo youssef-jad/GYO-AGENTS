@@ -1,4 +1,4 @@
-# This workflow validates the MCP server build across multiple Node.js versions
+# Validate the packaged MCP server across the supported Node.js versions.
 
 name: MCP Server CI
 
@@ -35,15 +35,5 @@ jobs:
     - name: Install dependencies
       run: npm ci
 
-    - name: Build TypeScript
-      run: npm run build
-
-    - name: Verify MCP server starts
-      run: |
-        timeout 5s node dist/index.js || code=$?
-        # MCP servers exit when stdin closes — exit code 1 (timeout) is acceptable
-        if [ "${code:-0}" -ne 124 ] && [ "${code:-0}" -ne 0 ] && [ "${code:-0}" -ne 1 ]; then
-          echo "MCP server exited unexpectedly with code $code"
-          exit 1
-        fi
-        echo "MCP server started successfully"
+    - name: Verify packaged MCP tools and shared memory
+      run: npm run test:package

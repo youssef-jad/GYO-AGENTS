@@ -28,12 +28,16 @@ import { twinMemory, MemoryType } from "./twin-memory.js";
 import { learnFromCodebase, formatBehavioralDNA, loadDNA, generateManifesto } from "./behavioral-dna.js";
 import { decisionJournal, formatDecision, formatDecisionList } from "./decision-journal.js";
 import { correctionMap, formatCorrectionPatterns, formatCorrectionStats, type CorrectionCategory } from "./correction-map.js";
+import { snapshotConfig, syncAgentConfig, formatSnapshotSummary, formatSyncReport } from "./config-watcher.js";
+import { checkChanges, getTaskRules, proposeGuardrail } from "./guardrails.js";
+import { runGuardrailCli } from "./guardrail-cli.js";
+import { maxPatchBytes } from "./patch.js";
 
 // ─── Server setup ─────────────────────────────────────────────────────────────
 
 const server = new McpServer({
     name: "gyo-agents",
-    version: "1.0.0",
+    version: "1.1.0",
 });
 
 // ─── Resources ────────────────────────────────────────────────────────────────
@@ -293,7 +297,7 @@ server.tool(
     },
     async ({ type, topic, content, tags = [], projectScope, confidence = "medium" }) => {
         // Check for contradictions first
-        const contradictions = twinMemory.findContradictions(type as MemoryType, topic, content);
+        const contradictions = twinMemory.findContradictions(type as MemoryType, topic, content, projectScope);
         let warning = "";
         if (contradictions.length > 0) {
             warning = `\n\n⚠️ CONTRADICTION DETECTED — existing memories on the same topic:\n` +
@@ -320,10 +324,10 @@ server.tool(
 
 server.tool(
     "search_memory",
-    "Search the developer's Digital Twin memory for a keyword or topic. Optionally filter by project scope.",
+    "Search global Digital Twin memories and memories in the selected project.",
     {
-        query: z.string().describe("Search query. Leave empty to list all memories."),
-        projectScope: z.string().optional().describe("Optional project name to filter memories (includes global + project-scoped)."),
+        query: z.string().describe("Search query. Leave empty to list memories in scope."),
+        projectScope: z.string().optional().describe("Optional project name or absolute path. Omit to search global memories only."),
     },
     async ({ query, projectScope }) => {
         const results = query.trim() ? twinMemory.search(query, projectScope) : twinMemory.getAll(projectScope);
@@ -456,7 +460,7 @@ server.tool(
     },
     async ({ context, domain, options, chosen, reasoning, consequences, projectScope, tags }) => {
         // Check for related past decisions
-        const related = decisionJournal.findRelated(context, domain);
+        const related = decisionJournal.findRelated(context, domain, projectScope);
         let relatedText = "";
         if (related.length > 0) {
             relatedText = "\n\n📎 Related past decisions:\n" +
@@ -476,9 +480,9 @@ server.tool(
     "search_decisions",
     "Search the Decision Journal for past architectural and technical decisions.",
     {
-        query: z.string().describe("Search query. Leave empty to list all active decisions."),
+        query: z.string().describe("Search query. Leave empty to list active decisions in scope."),
         domain: z.string().optional().describe("Filter by domain (e.g., 'database', 'auth')."),
-        projectScope: z.string().optional().describe("Filter by project."),
+        projectScope: z.string().optional().describe("Optional project name or absolute path. Omit for global decisions only."),
     },
     async ({ query, domain, projectScope }) => {
         const results = decisionJournal.search(query, domain, projectScope);
@@ -540,16 +544,17 @@ server.tool(
 server.tool(
     "get_correction_patterns",
     [
-        "Get all learned correction patterns — the generalized rules derived from your corrections.",
+        "Get learned correction patterns from the selected scope.",
         "These are the things the agent should check before showing you code.",
         "Patterns gain confidence as more corrections reinforce them.",
     ].join("\n"),
     {
+        projectScope: z.string().optional().describe("Optional project name or absolute path. Omit for global entries only."),
         outputFormat: z.enum(["markdown", "json"]).optional().describe("Output format. Default: 'markdown'."),
     },
-    async ({ outputFormat = "markdown" }) => {
-        const patterns = correctionMap.getPatterns();
-        const stats = correctionMap.getStats();
+    async ({ projectScope, outputFormat = "markdown" }) => {
+        const patterns = correctionMap.getPatterns(projectScope);
+        const stats = correctionMap.getStats(projectScope);
 
         if (outputFormat === "json") {
             return { content: [{ type: "text", text: JSON.stringify({ stats, patterns }, null, 2) }] };
@@ -569,6 +574,48 @@ server.tool(
     }
 );
 
+// ─── Guardrails ──────────────────────────────────────────────────────────────
+
+const guardrailProject = z.string().min(1).describe("Absolute project directory used when recording the correction.");
+
+server.tool(
+    "propose_guardrail",
+    "Draft a rule from an existing project-scoped correction. Show the draft to the developer for CLI approval before it can be used.",
+    {
+        projectPath: guardrailProject,
+        correctionId: z.string().min(1).max(100).describe("ID returned by record_correction."),
+        pathPattern: z.string().min(1).max(200).describe("Repo-relative pattern, e.g. app/Services/**/*.php."),
+        forbiddenLiteral: z.string().min(1).max(500).describe("Case-sensitive text to flag on a newly added line."),
+    },
+    async input => ({
+        content: [{ type: "text", text: JSON.stringify(proposeGuardrail(input), null, 2) }],
+    }),
+);
+
+server.tool(
+    "get_task_rules",
+    "Get approved guardrails for the files you plan to edit in this project.",
+    {
+        projectPath: guardrailProject,
+        paths: z.array(z.string().min(1).max(1024)).min(1).max(200).describe("Repository-relative file paths."),
+    },
+    async ({ projectPath, paths }) => ({
+        content: [{ type: "text", text: JSON.stringify({ rules: getTaskRules(projectPath, paths) }, null, 2) }],
+    }),
+);
+
+server.tool(
+    "check_changes",
+    "Check added lines in a standard Git patch against this project's approved guardrails. Reports rule IDs, file paths and destination line numbers.",
+    {
+        projectPath: guardrailProject,
+        patch: z.string().max(maxPatchBytes).describe("Standard Git diff with a/ and b/ prefixes, without colors, text conversion or external diff."),
+    },
+    async ({ projectPath, patch }) => ({
+        content: [{ type: "text", text: JSON.stringify(checkChanges(projectPath, patch), null, 2) }],
+    }),
+);
+
 // ─── Developer Manifesto ──────────────────────────────────────────────────────
 
 server.tool(
@@ -584,14 +631,15 @@ server.tool(
         "Call this AFTER writing code but BEFORE presenting it to the developer.",
     ].join("\n"),
     {
+        projectScope: z.string().optional().describe("Optional project name or absolute path. Omit for global entries only."),
         code: z.string().min(1).describe("The code to review."),
         language: z.string().optional().describe("Programming language (e.g., 'typescript'). Helps with language-specific checks."),
         context: z.string().optional().describe("What this code is for (e.g., 'new API endpoint for user registration')."),
     },
-    async ({ code, language = "unknown", context = "" }) => {
-        const patterns = correctionMap.getPatterns();
+    async ({ projectScope, code, language = "unknown", context = "" }) => {
+        const patterns = correctionMap.getPatterns(projectScope, language === "unknown" ? undefined : language);
         const dna = loadDNA();
-        const memories = twinMemory.getAll();
+        const memories = twinMemory.getAll(projectScope);
         const preferences = memories.filter(m => m.type === "preference");
         const mistakes = memories.filter(m => m.type === "mistake");
 
@@ -707,13 +755,14 @@ server.tool(
         "For the richest manifesto, run learn_from_codebase, record some corrections, and log a few decisions first.",
     ].join("\n"),
     {
+        projectScope: z.string().optional().describe("Optional project name or absolute path. Omit for global entries only."),
         outputFormat: z.enum(["markdown", "json"]).optional().describe("Output format. Default: 'markdown'."),
     },
-    async ({ outputFormat = "markdown" }) => {
+    async ({ projectScope, outputFormat = "markdown" }) => {
         const dna = loadDNA();
-        const memories = twinMemory.getAll();
-        const patterns = correctionMap.getPatterns();
-        const decisions = decisionJournal.getAll();
+        const memories = twinMemory.getAll(projectScope);
+        const patterns = correctionMap.getPatterns(projectScope);
+        const decisions = decisionJournal.getAll(projectScope);
         const name = twinMemory.getDeveloperName();
 
         if (outputFormat === "json") {
@@ -753,15 +802,13 @@ server.tool(
             // ignore
         }
 
-        const memories = twinMemory.getAll();
+        const memories = twinMemory.getAll(projectPath);
         const preferences = memories.filter(m => m.type === "preference");
         const solutions = memories.filter(m => m.type === "solution");
         const mistakes = memories.filter(m => m.type === "mistake");
 
         // Touch all memories being surfaced (tracks usage)
-        for (const m of memories) {
-            twinMemory.touch(m.id);
-        }
+        twinMemory.touch(memories.map(m => m.id));
 
         // Load Behavioral DNA
         const dna = loadDNA();
@@ -779,7 +826,7 @@ server.tool(
             "",
             "## 2. Correction Patterns — What You Always Change",
             (() => {
-                const patterns = correctionMap.getPatterns();
+                const patterns = correctionMap.getPatterns(projectPath);
                 if (patterns.length === 0) return "_No corrections recorded yet. Use `record_correction` when you change agent output._";
                 return formatCorrectionPatterns(patterns);
             })(),
@@ -797,7 +844,7 @@ server.tool(
             "",
             "## 4. Key Decisions",
             (() => {
-                const decisions = decisionJournal.getAll().filter(d => d.status === "active");
+                const decisions = decisionJournal.getAll(projectPath).filter(d => d.status === "active");
                 if (decisions.length === 0) return "_No decisions recorded yet. Use `record_decision` to log architectural choices._";
                 return decisions.slice(0, 10).map(d => `- **${d.chosen}** (${d.domain}): ${d.reasoning.slice(0, 150)}${d.reasoning.length > 150 ? "..." : ""}`).join("\n");
             })(),
@@ -807,6 +854,72 @@ server.tool(
         ].join("\n");
 
         return { content: [{ type: "text", text: profileText }] };
+    }
+);
+
+// ─── snapshot_config ──────────────────────────────────────────────────────────
+
+server.tool(
+    "snapshot_config",
+    [
+        "Capture a five-dimension baseline snapshot of the current project state.",
+        "Call this immediately after generating agent config files (CLAUDE.md, .clinerules, etc.) to lock in a baseline.",
+        "Future calls to sync_agent_config will diff the live project against this baseline.",
+        "",
+        "What is captured:",
+        "  - Directory structure: top-level dirs (ignoring node_modules, dist, vendor, etc.)",
+        "  - Dependency manifests: SHA-256 hash of package.json, composer.json, go.mod, etc.",
+        "  - Git state: HEAD hash, commit count, commit style (conventional vs freeform), ticket prefixes, top verbs",
+        "  - Domain focus: top 8 commit keyword areas",
+        "  - Agent config inventory: which of 13 known config files exist",
+        "",
+        "Snapshots persist to ~/.gyo-agents/snapshots/{projectHash}.json — one file per project.",
+    ].join("\n"),
+    {
+        projectPath: z.string().min(1).describe("Absolute path to the project root."),
+        label: z.string().optional().describe("Optional label for this snapshot (e.g., 'after initial generation', 'v2 refactor'). Default: 'baseline'."),
+    },
+    async ({ projectPath, label }) => {
+        const snapshot = snapshotConfig(projectPath, label);
+        return { content: [{ type: "text", text: formatSnapshotSummary(snapshot) }] };
+    }
+);
+
+// ─── sync_agent_config ────────────────────────────────────────────────────────
+
+server.tool(
+    "sync_agent_config",
+    [
+        "Compare the current project state against the last snapshot to detect config drift.",
+        "Call this any time your agent configs might be stale (days or weeks after generation).",
+        "",
+        "Returns one of three results:",
+        "  ✅ Up to date — nothing meaningful changed",
+        "  Targeted patches — severity-rated change list (🔴 High / 🟡 Medium / 🔵 Low) + per-section fix instructions",
+        "  Regeneration recommended — 2+ high-severity changes; faster to re-run generate_full_agent_context",
+        "",
+        "Change signals detected:",
+        "  - New top-level directories (🔴 High) → Update Project Structure / Architecture section",
+        "  - Removed directories (🟡 Medium) → Update Project Structure section",
+        "  - Dependency manifest changed (🟡 Medium) → Update Architecture / Essential Commands",
+        "  - Commit style evolved: conventional ↔ freeform (🔴 High) → Update Commit Format + Developer Style",
+        "  - New ticket prefix pattern (🔴 High) → Update Commit Format section",
+        "  - 30+ new commits since snapshot (🟡 Medium) → Refresh Developer Style section",
+        "  - Domain focus shift: 2+ new top keywords (🟡 Medium) → Update Domain Focus table",
+        "  - Agent config files added/removed (🔵 Low) → Update AGENTS.md rules reference",
+        "",
+        "Requires a prior snapshot_config call for the same projectPath.",
+    ].join("\n"),
+    {
+        projectPath: z.string().min(1).describe("Absolute path to the project root."),
+        outputFormat: z.enum(["markdown", "json"]).optional().describe("Output format. Default: 'markdown'."),
+    },
+    async ({ projectPath, outputFormat = "markdown" }) => {
+        const report = syncAgentConfig(projectPath);
+        const text = outputFormat === "json"
+            ? JSON.stringify(report, null, 2)
+            : formatSyncReport(report);
+        return { content: [{ type: "text", text }] };
     }
 );
 
@@ -837,9 +950,9 @@ server.tool(
     },
     async ({ projectPath }) => {
         const dna = loadDNA();
-        const memories = twinMemory.getAll();
-        const patterns = correctionMap.getPatterns();
-        const decisions = decisionJournal.getAll().filter(d => d.status === "active");
+        const memories = twinMemory.getAll(projectPath);
+        const patterns = correctionMap.getPatterns(projectPath);
+        const decisions = decisionJournal.getAll(projectPath).filter(d => d.status === "active");
         const preferences = memories.filter(m => m.type === "preference" && m.confidence !== "low");
         const mistakes = memories.filter(m => m.type === "mistake");
         const name = twinMemory.getDeveloperName() || "the developer";
@@ -919,13 +1032,16 @@ server.tool(
 
         // ── Proactive behavior instructions ──
         sections.push("## PROACTIVE BEHAVIOR — Do these automatically");
+        sections.push("Use the absolute project path as projectScope when reviewing or saving repo-specific context.");
         sections.push("");
         sections.push("### Before writing code:");
+        sections.push("- Call `get_task_rules` with the project path and planned file paths to load approved guardrails.");
         sections.push("- Review the CORRECTION RULES above. If your code would match a corrected pattern, fix it before writing.");
         sections.push("- If the task involves an architectural choice, check SETTLED DECISIONS first.");
         sections.push("- Match the CODING STYLE patterns — don't use for-loops if the developer prefers .map(), etc.");
         sections.push("");
         sections.push("### After writing code:");
+        sections.push("- Call `check_changes` with the project path and Git diff to check newly added lines against approved guardrails.");
         sections.push("- Call `review_as_developer` with your code to catch issues the developer would flag.");
         sections.push("- If issues are found, fix them silently before presenting the code.");
         sections.push("");
@@ -1013,7 +1129,9 @@ server.resource("Digital Twin System Prompt", "gyo-agents://twin-system-prompt",
     }
 
     lines.push("## Proactive Rules");
-    lines.push("- Before writing code: check corrections and decisions above");
+    lines.push("- Use the absolute project path as projectScope when reviewing or saving repo-specific context");
+    lines.push("- Before writing code: check corrections and decisions above and load approved guardrails with get_task_rules");
+    lines.push("- After editing: call check_changes on the Git diff");
     lines.push("- After writing code: call review_as_developer to self-check");
     lines.push("- When developer edits your output: call record_correction");
     lines.push("- End of session: call memorize for new preferences, record_decision for choices made");
@@ -1028,10 +1146,19 @@ server.resource("Digital Twin System Prompt", "gyo-agents://twin-system-prompt",
 });
 
 async function main() {
+    if (process.argv[2] === "guardrail") {
+        try {
+            await runGuardrailCli(process.argv.slice(3));
+        } catch (error) {
+            console.error(error instanceof Error ? error.message : error);
+            process.exitCode = 2;
+        }
+        return;
+    }
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error(
-        `GYO-AGENTS MCP Server v1.0.0 started (stdio transport)\n` +
+        `GYO-AGENTS MCP Server v1.1.0 started (stdio transport)\n` +
         `  ✦ ${TOOLS.length} get_prompt_* tools (one per AI coding tool)\n` +
         `  ✦ search_prompts — RAG search across all prompts\n` +
         `  ✦ analyze_git_style_on_the_fly — live git history analysis\n` +
@@ -1042,10 +1169,13 @@ async function main() {
         `  ✦ learn_from_codebase — Behavioral DNA builder\n` +
         `  ✦ record_decision / search_decisions — Decision Journal\n` +
         `  ✦ record_correction / get_correction_patterns — Pair Programming Memory\n` +
+        `  ✦ propose_guardrail / get_task_rules / check_changes — project guardrails\n` +
         `  ✦ review_as_developer — proactive code review through developer's lens\n` +
         `  ✦ generate_manifesto — Developer soul narrative\n` +
         `  ✦ get_twin_system_prompt — IDE-agnostic proactive behavior injection\n` +
         `  ✦ update_memory / prune_stale_memories — enhanced memory management\n` +
+        `  ✦ snapshot_config — capture project baseline for config drift detection\n` +
+        `  ✦ sync_agent_config — diff live project vs baseline, get targeted patch report\n` +
         `  ✦ Resources: gyo-agents://tools, gyo-agents://twin-system-prompt`
     );
 }

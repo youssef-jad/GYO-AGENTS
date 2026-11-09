@@ -1,6 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
+import { inScope, JsonStore, scopeKey } from "./json-store.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Correction Map — Pair Programming Memory
@@ -55,16 +53,6 @@ export interface CorrectionMapData {
     patterns: CorrectionPattern[];
 }
 
-const CORRECTIONS_FILE = "correction-map.json";
-const CORRECTIONS_DIR = join(homedir(), ".gyo-agents");
-
-function getCorrectionPath(): string {
-    if (!existsSync(CORRECTIONS_DIR)) {
-        mkdirSync(CORRECTIONS_DIR, { recursive: true });
-    }
-    return join(CORRECTIONS_DIR, CORRECTIONS_FILE);
-}
-
 function generateId(): string {
     return "cor-" + Math.random().toString(36).substring(2, 10);
 }
@@ -74,28 +62,9 @@ function patternId(): string {
 }
 
 export class CorrectionMap {
-    private data: CorrectionMapData;
-    private filePath: string;
-
-    constructor() {
-        this.filePath = getCorrectionPath();
-        this.data = this.load();
-    }
-
-    private load(): CorrectionMapData {
-        if (!existsSync(this.filePath)) {
-            return { version: 1, corrections: [], patterns: [] };
-        }
-        try {
-            return JSON.parse(readFileSync(this.filePath, "utf-8")) as CorrectionMapData;
-        } catch {
-            return { version: 1, corrections: [], patterns: [] };
-        }
-    }
-
-    private save(): void {
-        writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), "utf-8");
-    }
+    private readonly store = new JsonStore<CorrectionMapData>("correction-map.json", () => ({
+        version: 1, corrections: [], patterns: [],
+    }));
 
     /**
      * Record a correction — the developer changed what the agent suggested.
@@ -110,50 +79,53 @@ export class CorrectionMap {
         language?: string;
         projectScope?: string | null;
     }): { correction: Correction; patternMatch: CorrectionPattern | null } {
-        const now = new Date().toISOString();
+        return this.store.update(data => {
+            const now = new Date().toISOString();
 
-        // Check if a very similar correction already exists
-        const similar = this.findSimilarCorrection(input.category, input.lesson);
-        if (similar) {
-            similar.occurrences++;
-            similar.lastOccurrence = now;
-            this.save();
-            const pattern = this.reinforcePattern(similar);
-            return { correction: similar, patternMatch: pattern };
-        }
+            const scope = scopeKey(input.projectScope);
+            const language = input.language ?? "unknown";
+            const sameContext = data.corrections.filter(c =>
+                c.category === input.category && c.language === language && scopeKey(c.projectScope) === scope
+            );
+            const similar = this.findSimilarCorrection(sameContext, input.lesson);
+            if (similar) {
+                similar.occurrences++;
+                similar.lastOccurrence = now;
+                const pattern = this.reinforcePattern(data, sameContext, similar);
+                return { correction: similar, patternMatch: pattern };
+            }
 
-        const correction: Correction = {
-            id: generateId(),
-            date: now,
-            category: input.category,
-            context: input.context,
-            agentSuggested: input.agentSuggested,
-            developerChose: input.developerChose,
-            lesson: input.lesson,
-            language: input.language ?? "unknown",
-            projectScope: input.projectScope ?? null,
-            occurrences: 1,
-            lastOccurrence: now,
-        };
+            const correction: Correction = {
+                id: generateId(),
+                date: now,
+                category: input.category,
+                context: input.context,
+                agentSuggested: input.agentSuggested,
+                developerChose: input.developerChose,
+                lesson: input.lesson,
+                language,
+                projectScope: scope,
+                occurrences: 1,
+                lastOccurrence: now,
+            };
 
-        this.data.corrections.push(correction);
+            data.corrections.push(correction);
 
-        // Try to match or create a pattern
-        const pattern = this.reinforcePattern(correction);
+            // Try to match or create a pattern
+            const pattern = this.reinforcePattern(data, [...sameContext, correction], correction);
 
-        this.save();
-        return { correction, patternMatch: pattern };
+            return { correction, patternMatch: pattern };
+        });
     }
 
     /**
      * Find a correction with the same category and similar lesson text.
      */
-    private findSimilarCorrection(category: CorrectionCategory, lesson: string): Correction | null {
+    private findSimilarCorrection(corrections: Correction[], lesson: string): Correction | null {
         const lessonTerms = lesson.toLowerCase().split(/\s+/).filter(t => t.length > 3);
         if (lessonTerms.length === 0) return null;
 
-        for (const c of this.data.corrections) {
-            if (c.category !== category) continue;
+        for (const c of corrections) {
             const cTerms = c.lesson.toLowerCase();
             const overlap = lessonTerms.filter(t => cTerms.includes(t)).length;
             if (overlap / lessonTerms.length > 0.6) return c;
@@ -165,14 +137,12 @@ export class CorrectionMap {
      * Look for patterns: if multiple corrections share a category and similar lessons,
      * create or strengthen a generalized pattern.
      */
-    private reinforcePattern(correction: Correction): CorrectionPattern | null {
-        // Find corrections in the same category
-        const sameCat = this.data.corrections.filter(c => c.category === correction.category);
-        if (sameCat.length < 2) return null;
+    private reinforcePattern(data: CorrectionMapData, sameContext: Correction[], correction: Correction): CorrectionPattern | null {
+        const correctionIds = new Set(sameContext.map(c => c.id));
 
         // Check if an existing pattern covers this correction
-        for (const pattern of this.data.patterns) {
-            if (pattern.category !== correction.category) continue;
+        for (const pattern of data.patterns) {
+            if (!pattern.correctionIds.length || !pattern.correctionIds.every(id => correctionIds.has(id))) continue;
             const patternTerms = pattern.rule.toLowerCase().split(/\s+/).filter(t => t.length > 3);
             const lessonTerms = correction.lesson.toLowerCase();
             const overlap = patternTerms.filter(t => lessonTerms.includes(t)).length;
@@ -195,8 +165,8 @@ export class CorrectionMap {
             }
         }
 
-        // Create a new pattern if we have enough corrections in this category
-        if (sameCat.length >= 2) {
+        // A repeated lesson is evidence for a pattern in this context.
+        if (correction.occurrences >= 2) {
             const newPattern: CorrectionPattern = {
                 id: patternId(),
                 category: correction.category,
@@ -210,7 +180,7 @@ export class CorrectionMap {
                 createdAt: new Date().toISOString(),
                 updatedAt: new Date().toISOString(),
             };
-            this.data.patterns.push(newPattern);
+            data.patterns.push(newPattern);
             return newPattern;
         }
 
@@ -218,28 +188,29 @@ export class CorrectionMap {
     }
 
     /** Get all active patterns, sorted by confidence. */
-    public getPatterns(): CorrectionPattern[] {
-        return [...this.data.patterns].sort((a, b) => b.confidence - a.confidence);
+    public getPatterns(projectScope?: string, language?: string): CorrectionPattern[] {
+        return this.getAll(projectScope, language).patterns.sort((a, b) => b.confidence - a.confidence);
     }
 
     /** Get corrections for a specific category. */
-    public getByCategory(category: CorrectionCategory): Correction[] {
-        return this.data.corrections.filter(c => c.category === category);
+    public getByCategory(category: CorrectionCategory, projectScope?: string): Correction[] {
+        return this.getAll(projectScope).corrections.filter(c => c.category === category);
     }
 
     /** Search corrections and patterns. */
-    public search(query: string): { corrections: Correction[]; patterns: CorrectionPattern[] } {
+    public search(query: string, projectScope?: string): { corrections: Correction[]; patterns: CorrectionPattern[] } {
+        const data = this.getAll(projectScope);
         const terms = query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
         if (terms.length === 0) {
-            return { corrections: this.data.corrections, patterns: this.data.patterns };
+            return { corrections: data.corrections, patterns: data.patterns };
         }
 
-        const corrections = this.data.corrections.filter(c => {
+        const corrections = data.corrections.filter(c => {
             const text = `${c.category} ${c.context} ${c.lesson} ${c.agentSuggested} ${c.developerChose}`.toLowerCase();
             return terms.some(t => text.includes(t));
         });
 
-        const patterns = this.data.patterns.filter(p => {
+        const patterns = data.patterns.filter(p => {
             const text = `${p.category} ${p.rule}`.toLowerCase();
             return terms.some(t => text.includes(t));
         });
@@ -249,28 +220,30 @@ export class CorrectionMap {
 
     /** Remove a correction by ID. */
     public remove(id: string): boolean {
-        const before = this.data.corrections.length;
-        this.data.corrections = this.data.corrections.filter(c => c.id !== id);
-        // Also remove from any patterns
-        for (const p of this.data.patterns) {
-            p.correctionIds = p.correctionIds.filter(cid => cid !== id);
-        }
-        // Remove patterns with no corrections
-        this.data.patterns = this.data.patterns.filter(p => p.correctionIds.length > 0);
-        if (this.data.corrections.length < before) {
-            this.save();
-            return true;
-        }
-        return false;
+        return this.store.update(data => {
+            const before = data.corrections.length;
+            data.corrections = data.corrections.filter(c => c.id !== id);
+            // A pattern can still contain text from a removed correction.
+            data.patterns = data.patterns.filter(p => !p.correctionIds.includes(id));
+            return data.corrections.length < before;
+        });
     }
 
-    public getAll(): CorrectionMapData {
-        return this.data;
+    public getAll(projectScope?: string, language?: string): CorrectionMapData {
+        const data = this.store.read();
+        const scope = scopeKey(projectScope);
+        const corrections = data.corrections.filter(c =>
+            inScope(c.projectScope, scope) && (!language || c.language === "unknown" || c.language === language)
+        );
+        const visible = new Set(corrections.map(c => c.id));
+        const patterns = data.patterns.filter(p => p.correctionIds.length > 0 && p.correctionIds.every(id => visible.has(id)));
+        return { version: data.version, corrections, patterns };
     }
 
-    public getStats(): { totalCorrections: number; totalPatterns: number; topCategories: Array<{ category: string; count: number }> } {
+    public getStats(projectScope?: string): { totalCorrections: number; totalPatterns: number; topCategories: Array<{ category: string; count: number }> } {
+        const data = this.getAll(projectScope);
         const catMap = new Map<string, number>();
-        for (const c of this.data.corrections) {
+        for (const c of data.corrections) {
             catMap.set(c.category, (catMap.get(c.category) ?? 0) + c.occurrences);
         }
         const topCategories = [...catMap.entries()]
@@ -278,8 +251,8 @@ export class CorrectionMap {
             .map(([category, count]) => ({ category, count }));
 
         return {
-            totalCorrections: this.data.corrections.length,
-            totalPatterns: this.data.patterns.length,
+            totalCorrections: data.corrections.length,
+            totalPatterns: data.patterns.length,
             topCategories,
         };
     }

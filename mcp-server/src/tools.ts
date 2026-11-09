@@ -1,12 +1,13 @@
 import { fileURLToPath } from "url";
-import { dirname, join, resolve } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { readFileSync, existsSync } from "fs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// Root of GYO-AGENTS repo (one level up from mcp-server/)
-const REPO_ROOT = resolve(__dirname, "../../");
+const PROMPT_ROOT = basename(__dirname) === "src"
+    ? resolve(__dirname, "../..")
+    : join(__dirname, "prompts");
 
 export interface ToolDefinition {
     id: string;
@@ -40,15 +41,14 @@ export const TOOLS: ToolDefinition[] = [
         name: "get_prompt_claudecode",
         displayName: "Claude Code",
         folder: "ClaudeCode",
-        outputFormat: "CLAUDE.md hierarchy + .claude/settings.json + .claude/commands/",
+        outputFormat: "CLAUDE.md hierarchy + .claude/commands/",
         outputFiles: [
             "CLAUDE.md",
             "tests/CLAUDE.md",
-            ".claude/settings.json",
             ".claude/commands/new-module.md",
         ],
         description:
-            "Generate a hierarchical CLAUDE.md system, .claude/settings.json permissions, and custom slash commands for Claude Code.",
+            "Generate a hierarchical CLAUDE.md system and custom slash commands for Claude Code.",
     },
     {
         id: "cline",
@@ -148,7 +148,7 @@ export const TOOLS: ToolDefinition[] = [
 ];
 
 export function getPromptContent(tool: ToolDefinition): string {
-    const promptPath = join(REPO_ROOT, tool.folder, "GENERATE_AGENT.md");
+    const promptPath = join(PROMPT_ROOT, tool.folder, "GENERATE_AGENT.md");
     if (!existsSync(promptPath)) {
         throw new Error(
             `GENERATE_AGENT.md not found for tool "${tool.displayName}" at ${promptPath}`

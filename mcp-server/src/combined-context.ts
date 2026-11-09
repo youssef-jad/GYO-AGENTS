@@ -86,7 +86,7 @@ export function buildFullAgentContext(
         domainContexts,
         detectedDomains,
         recommendedTools,
-        twinMemories: twinMemory.getAll(),
+        twinMemories: twinMemory.getAll(projectPath),
         readyToUse: gitStyle !== null,
     };
 }

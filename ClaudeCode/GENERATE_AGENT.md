@@ -12,7 +12,6 @@ All applicable CLAUDE.md files are loaded and concatenated — root first, then 
 
 Additionally, Claude Code supports:
 - **`#[[import:path/to/file]]`** — Inline file imports within any CLAUDE.md
-- **`.claude/settings.json`** — Permissions, allowed/denied tools, environment variables
 - **`.claude/commands/`** — Custom slash commands (Markdown files that become `/project:command-name`)
 
 ---
@@ -168,37 +167,13 @@ Target: 20–30 lines.
 
 ---
 
-### Output 3: `.claude/settings.json` (Permissions & Tools)
+### Permissions
 
-Create a `.claude/settings.json` that:
-- Allows shell commands needed for this project (test runner, linting, artisan, make)
-- Denies destructive operations that should require confirmation
-- Sets environment hints if applicable
-
-Example schema:
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(./vendor/bin/phpunit*)",
-      "Bash(./vendor/bin/phpcs*)",
-      "Bash(php artisan*)",
-      "Bash(make*)"
-    ],
-    "deny": [
-      "Bash(rm -rf*)",
-      "Bash(git push --force*)",
-      "Bash(php artisan migrate:fresh*)"
-    ]
-  }
-}
-```
-
-Generate the allow/deny list based on actual commands found in the Makefile, composer.json scripts, and CI configuration.
+Leave Claude Code permissions untouched during generation. If the user separately requests permission changes, show the exact commands and proposed settings for approval before editing. Use specific verified commands and require confirmation for destructive operations.
 
 ---
 
-### Output 4: `.claude/commands/` (Custom Slash Commands)
+### Output 3: `.claude/commands/` (Custom Slash Commands)
 
 Create at least 2 custom slash commands relevant to this project's most common tasks.
 
@@ -222,7 +197,7 @@ Run the following steps to {action} for $ARGUMENTS:
 
 ---
 
-### Output 5: AGENTS.md (Lightweight Entrypoint — ~50 lines max)
+### Output 4: AGENTS.md (Lightweight Entrypoint — ~50 lines max)
 
 ```markdown
 # AGENTS.md
@@ -244,7 +219,6 @@ Run the following steps to {action} for $ARGUMENTS:
 Detailed guidance for Claude Code:
 - Always-on: `CLAUDE.md` (root)
 - Directory-scoped: `tests/CLAUDE.md`, `modules/CLAUDE.md`, `database/CLAUDE.md`
-- Permissions: `.claude/settings.json`
 - Custom commands: `.claude/commands/`
 ```
 

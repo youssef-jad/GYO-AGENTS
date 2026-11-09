@@ -2,6 +2,8 @@
 
 The Digital Twin works with ANY MCP-compatible AI tool. Here's how to make it proactive in each IDE.
 
+Use the absolute project path as `projectScope` when a memory, correction, or decision is specific to the current repo. Omit it for global entries.
+
 ## Universal: The System Prompt Approach
 
 The simplest way to make any agent Twin-aware. Works everywhere.
@@ -9,7 +11,7 @@ The simplest way to make any agent Twin-aware. Works everywhere.
 ### Option A: Call the tool at session start
 Tell your agent (in its rules/instructions):
 ```
-At the start of every session, call `get_twin_system_prompt()` from the gyo-agents MCP server
+At the start of every session, call `get_twin_system_prompt(projectPath: <absolute project path>)` from the gyo-agents MCP server
 and follow all rules in the response for the entire session.
 ```
 
@@ -18,7 +20,7 @@ MCP clients that support resources can auto-load:
 ```
 gyo-agents://twin-system-prompt
 ```
-This returns a compact markdown document with all behavioral rules.
+This returns a compact Markdown document with global rules. Use the tool with the absolute project path to include scoped entries.
 
 ---
 
@@ -37,7 +39,7 @@ Then add this content after the front-matter:
 ## Digital Twin Integration
 
 At the START of every conversation:
-- Call `get_twin_system_prompt()` and follow all rules in the response.
+- Call `get_twin_system_prompt(projectPath: <absolute project path>)` and follow all rules in the response.
 
 BEFORE writing or modifying code:
 - Check if the task involves an architectural choice. If so, call `search_decisions` first.
@@ -63,7 +65,7 @@ Add to your root `CLAUDE.md`:
 
 This project uses the GYO-AGENTS Digital Twin. Follow these rules:
 
-1. At session start, call `get_twin_system_prompt()` and follow all returned rules.
+1. At session start, call `get_twin_system_prompt(projectPath: <absolute project path>)` and follow all returned rules.
 2. Before writing code, call `search_decisions` if the task involves choosing between approaches.
 3. After writing code, call `review_as_developer` to self-check against developer preferences.
 4. If the developer edits your output, call `record_correction` to learn from it.
@@ -77,17 +79,17 @@ Add to `.clinerules` or `.roo/rules/digital-twin.md`:
 ```markdown
 # Digital Twin Rules
 
-Always call `get_twin_system_prompt()` at the start of each task and follow the returned rules.
+Always call `get_twin_system_prompt(projectPath: <absolute project path>)` at the start of each task and follow the returned rules.
 
 After every code write:
-- Call `review_as_developer(code, language, context)` to self-check.
+- Call `review_as_developer(code, language, context, projectScope)` to self-check.
 - Fix any flagged issues before showing the result.
 
 When the user modifies your code:
-- Call `record_correction(category, context, agentSuggested, developerChose, lesson)`.
+- Call `record_correction(category, context, agentSuggested, developerChose, lesson, projectScope)`.
 
 Before architectural choices:
-- Call `search_decisions(query)` to check for existing decisions.
+- Call `search_decisions(query, projectScope)` to check for existing decisions.
 ```
 
 ## Windsurf (.windsurfrules)
@@ -97,7 +99,7 @@ Add to `.windsurfrules`:
 ```markdown
 ## Digital Twin
 
-Call `get_twin_system_prompt()` at session start. Follow all returned rules.
+Call `get_twin_system_prompt(projectPath: <absolute project path>)` at session start. Follow all returned rules.
 After writing code, call `review_as_developer` to self-check.
 When the user edits your output, call `record_correction` to learn.
 Before architectural choices, call `search_decisions` to check for prior decisions.
@@ -111,7 +113,7 @@ Add to `.github/copilot-instructions.md`:
 ## Digital Twin Integration
 
 If the gyo-agents MCP server is connected:
-1. Call `get_twin_system_prompt()` at session start and follow all rules.
+1. Call `get_twin_system_prompt(projectPath: <absolute project path>)` at session start and follow all rules.
 2. Call `review_as_developer` after writing code to self-check.
 3. Call `record_correction` when the developer edits your output.
 4. Call `search_decisions` before making architectural choices.
@@ -127,7 +129,7 @@ Session 1: Twin is empty. Agent writes code normally.
            Session ends → agent records preferences.
 
 Session 2: Twin has a few corrections and preferences.
-           get_twin_system_prompt() returns basic rules.
+           get_twin_system_prompt(projectPath: <absolute project path>) returns basic rules.
            Agent avoids the mistakes from Session 1.
 
 Session 10: Twin has dozens of corrections, patterns emerge.
