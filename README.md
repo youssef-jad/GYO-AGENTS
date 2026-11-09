@@ -1,37 +1,62 @@
 [![MseeP.ai Security Assessment Badge](https://mseep.net/pr/youssef-jad-gyo-agents-badge.png)](https://mseep.ai/app/youssef-jad-gyo-agents)
 
-## 🚀 MCP Server: The Developer Digital Twin
+# GYO-AGENTS
 
-Instead of copy-pasting prompts, connect the **GYO-AGENTS MCP Server** to any AI tool (Cursor, Claude Code, Cline, Kiro, Windsurf) to instantly transform it into your **Digital Twin**. 
+Generate instructions for your coding agent, share project knowledge across clients, and turn recurring corrections into checks that run before an agent finishes.
 
-The server provides a global, persistent memory (`~/.gyo-agents/twin-memory.json`) that lives outside of any single repository. AI agents can learn your preferences, save your recurring solutions, and avoid mistakes across all of your projects.
+Use the [standalone AGENTS.md prompt](#prompt-generate-your-own-agentsmd) in any coding agent, or connect the MCP server for shared memory, Guardrails, and the full library of 11 client-specific templates.
+
+## Quick start
+
+Build the MCP server from a checkout with Git and Node.js 18 or newer.
 
 ```bash
-cd mcp-server && npm install && npm run build
+git clone https://github.com/youssef-jad/GYO-AGENTS.git
+cd GYO-AGENTS/mcp-server
+npm ci
+npm run build
 ```
 
-Add to your tool's MCP config (replace `/ABSOLUTE/PATH/TO/GYO-AGENTS`):
+Set `gyo_entry` to the built server's absolute path. Run the registration command for your client from the repository you want to work in.
 
-```json
-{
-  "mcpServers": {
-    "gyo-agents": {
-      "command": "node",
-      "args": ["/ABSOLUTE/PATH/TO/GYO-AGENTS/mcp-server/dist/index.js"]
-    }
-  }
-}
+```bash
+gyo_entry="/absolute/path/to/GYO-AGENTS/mcp-server/dist/index.js"
+
+# Claude Code
+claude mcp add --scope local gyo-agents -- node "$gyo_entry"
+
+# Codex
+codex mcp add gyo-agents -- node "$gyo_entry"
 ```
 
-**MCP tools**
+Start a new session and ask for the client-specific setup prompt. Use `get_prompt_claudecode` in Claude Code or `get_prompt_codexcli` in Codex. For Cursor, Kiro, and other clients, see the [MCP setup guide](mcp-server/README.md#quick-start).
 
-* **Prompt Tools (11):** Native prompt generators for every major AI coding agent.
-* **GYO Guardrails:** Turn a correction into an approved project rule that agents can load and check against their diffs. [Setup and example](mcp-server/README.md#gyo-guardrails)
-* **Digital Twin Memory (4):** `get_digital_twin_profile`, `memorize`, `forget_memory`, `search_memory` — Teach AI your global preferences.
-* **Intelligence & Validation (7):** `generate_full_agent_context`, `search_prompts`, `analyze_git_style_on_the_fly`, `get_domain_context`, `validate_api_response`, `check_cache_usage`.
-* **Living Config Auto-Updater (2):** `snapshot_config`, `sync_agent_config` — Keep agent configs in sync as your codebase evolves, with targeted per-section patch suggestions.
+## GYO Guardrails
 
-📖 Full setup guide & tool details → [`mcp-server/README.md`](mcp-server/README.md) · Config snippets → [`examples/mcp-configs/`](examples/mcp-configs/)
+Teach a convention in one agent, approve it once, and have another agent check its changes against the same rule. For example, ask Claude Code:
+
+> In this repo, use the `App\Support\CacheStore` wrapper in PHP services. Record that correction for this repository and propose a GYO Guardrail for `app/Services/**/*.php` that flags newly added lines containing `use Illuminate\Support\Facades\Cache;`. Leave the rule pending.
+
+From the target repository, review the proposed rule and approve its ID.
+
+```bash
+node "$gyo_entry" guardrail list
+node "$gyo_entry" guardrail approve RULE_ID
+```
+
+To run checks automatically, merge the [Stop hook example](examples/guardrails-hooks/stop-hook.json) into `.claude/settings.local.json` for Claude Code or `.codex/hooks.json` for Codex. If you built from a checkout, point the hook command to `node "/absolute/path/to/GYO-AGENTS/mcp-server/dist/index.js" guardrail hook`. In Codex, use `/hooks` to review and trust the hook.
+
+When the agent tries to finish, the hook checks staged and unstaged tracked changes against `HEAD`. A violation gives the agent one repair pass, followed by a recheck. Include new files in the diff through your normal staging workflow. Each rule checks for exact, case-sensitive text on added lines in matching files.
+
+In a synthetic PHP repo, Claude Code and Codex both fixed the same seeded Cache facade import after the hook ran. Codex received a neutral task prompt and made zero MCP calls. Both final diffs passed Guardrails and the PHP smoke test.
+
+[Full Guardrails guide, manual checks, and CI export](mcp-server/README.md#gyo-guardrails)
+
+## What else you can do
+
+- **Generate agent instructions.** Use the [11 client templates](mcp-server/README.md#prompt-tools-11) to build instructions from your repo structure, commands, and conventions.
+- **Share local memory.** Save preferences, corrections, and decisions for clients on the same machine. Use project scope for repo-specific knowledge and global scope for conventions you want across repos. [Memory setup](mcp-server/README.md#digital-twin-memory-global-persona)
+- **Keep instructions current.** Use `snapshot_config` and `sync_agent_config` to detect repo changes and see which instructions need updating. [Config freshness guide](mcp-server/README.md#keeping-configs-fresh)
 
 ---
 
