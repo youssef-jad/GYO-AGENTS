@@ -2,9 +2,9 @@
 
 # GYO-AGENTS
 
-Generate instructions for your coding agent, share project knowledge across clients, and turn recurring corrections into checks that run before an agent finishes.
+Generate instructions for your coding agent, share project knowledge, enforce team conventions, and hand unfinished work from one agent to another with verification evidence tied to the code.
 
-Use the [standalone AGENTS.md prompt](#prompt-generate-your-own-agentsmd) in any coding agent, or connect the MCP server for shared memory, Guardrails, and the full library of 11 client-specific templates.
+Use the [standalone AGENTS.md prompt](#prompt-generate-your-own-agentsmd) in any coding agent, or connect the MCP server for shared memory, Guardrails, local task handoffs, and the full library of 11 client-specific templates.
 
 ## Quick start
 
@@ -55,6 +55,26 @@ Export approved rules to `.gyo/guardrails.json` and review them in a PR. After m
 To run the same local check as the hook, use `node "$gyo_entry" guardrail check --working-tree` from the target repo.
 
 **Verified in Claude Code and Codex.** In separate fresh clones with empty local rule stores, both agents received a prompt to run a PHP smoke test. Their Stop hooks read the team policy, caught the forbidden Cache facade import in an untracked service, and sent the agents back to fix it. Both checks then reported zero violations and both smoke tests passed. The file stayed untracked throughout.
+
+## GYO Relay (local preview)
+
+Let one agent checkpoint unfinished work and another continue it through GYO and the same local profile. Relay saves the objective, acceptance criteria, progress, next steps, and uncertainty. A temporary claim prevents two cooperating clients from owning the same handoff; after expiry, another client can reclaim it and the previous token can no longer submit.
+
+Verification runs checks defined in the project's committed `.gyo/relay.json`, plus GYO Guardrails. Evidence is tied to the commit, staged content, tracked and non-ignored untracked files, and policy. When these change, `get_handoff` and `claim_handoff` report stale evidence and the changed paths. An agent's summary alone never counts as verification.
+
+Start by reviewing and committing the project's allowed check commands, then ask an agent to create and claim a handoff. Both clients must use the same `GYO_AGENTS_DATA_DIR` and checkout. [Setup, tool workflow, limits, and live validation](mcp-server/RELAY.md)
+
+For example, ask the first agent:
+
+> Use GYO Relay to create and claim this task. Before stopping, verify the current work and checkpoint what is complete, what remains, and what is uncertain. Release the claim for the next agent.
+
+In a new session with the second agent:
+
+> Find and claim the unfinished GYO Relay handoff in this checkout. Inspect its checkpoint and evidence freshness, complete the remaining work, run verification, and submit the result. Keep changes local.
+
+The workflow uses `create_handoff`, `claim_handoff`, `checkpoint_handoff`, `verify_result`, and `submit_result`; `list_handoffs` and `get_handoff` let clients discover tasks and inspect their current state. Relay coordinates participating clients on one machine; it does not launch agents or transfer work between remote checkouts.
+
+**Verified with real Claude Code and Codex sessions.** Claude implemented part of a synthetic billing task, recorded passing tests and checkpointed before stopping. After deliberate changes to the code and an untracked file, a new Codex session reclaimed the expired handoff, identified stale evidence, repaired the regression, completed the remaining work and submitted fresh passing verification. The old claim token was rejected.
 
 ## What else you can do
 

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { relayChecks } from "./relay-checks.mjs";
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const npm = process.env.npm_execpath;
@@ -58,6 +59,7 @@ test("installed package release checks", { timeout: 180_000 }, async t => {
     }
 
     const [first, second] = await Promise.all([connect("client-a"), connect("client-b")]);
+    await t.test("Relay from the installed package", async t => relayChecks(t, { root, first, second, connect }));
     async function call(client, name, args = {}) {
         const result = await client.callTool({ name, arguments: args });
         const output = result.content.map(item => item.text).join("\n");

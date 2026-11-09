@@ -8,6 +8,20 @@ Any MCP-compatible AI tool (Cursor, Claude Code, Cline, Kiro, Windsurf, Continue
 
 ## Tools Exposed
 
+### GYO Relay (local preview)
+
+Continue another agent's unfinished work, reclaim expired task ownership, and detect when code changes invalidate verification evidence. Both clients share the same checkout and local `GYO_AGENTS_DATA_DIR`. [Full setup and validation guide](RELAY.md)
+
+| Tool | Description |
+|------|-------------|
+| `create_handoff` | Save the objective, context, acceptance criteria, and repository baseline |
+| `list_handoffs` | Discover tasks in the current checkout |
+| `get_handoff` | Read progress and compare evidence with the current repository |
+| `claim_handoff` | Claim ownership with a temporary lease; reclaim after expiry |
+| `checkpoint_handoff` | Save completed work, next steps and uncertainty; renew or release the lease |
+| `verify_result` | Run committed project checks and Guardrails; record actual evidence |
+| `submit_result` | Save the result and release ownership, with verification reported separately |
+
 ### Prompt Tools (11)
 | Tool | Description |
 |------|-------------|

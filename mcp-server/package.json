@@ -39,6 +39,7 @@
   ],
   "license": "MIT",
   "files": [
-    "dist"
+    "dist",
+    "RELAY.md"
   ]
 }

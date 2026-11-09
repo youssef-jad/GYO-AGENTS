@@ -37,6 +37,7 @@ import {
 import { checkChanges, getTaskRules, proposeGuardrail } from "./guardrails.js";
 import { runGuardrailCli } from "./guardrail-cli.js";
 import { maxPatchBytes } from "./patch.js";
+import { registerRelayTools, runRelayCli } from "./relay-tools.js";
 
 // ─── Server setup ─────────────────────────────────────────────────────────────
 
@@ -44,6 +45,7 @@ const server = new McpServer({
     name: "gyo-agents",
     version: "1.0.0",
 });
+registerRelayTools(server);
 
 // ─── Resources ────────────────────────────────────────────────────────────────
 
@@ -1185,6 +1187,14 @@ server.tool(
 );
 
 async function main() {
+    if (process.argv[2] === "relay") {
+        try { await runRelayCli(process.argv.slice(3)); }
+        catch (error) {
+            console.error(error instanceof Error ? error.message : error);
+            process.exitCode = 2;
+        }
+        return;
+    }
     if (process.argv[2] === "guardrail") {
         try {
             await runGuardrailCli(process.argv.slice(3));
