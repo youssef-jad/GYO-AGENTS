@@ -1,150 +1,219 @@
-import { createHash } from "crypto";
+import { execFileSync } from "child_process";
 import {
     existsSync,
     mkdirSync,
-    readdirSync,
     readFileSync,
     writeFileSync,
+    readdirSync,
+    statSync,
 } from "fs";
 import { join } from "path";
 import { dataDirectory } from "./json-store.js";
-import { execFileSync } from "child_process";
+import { createHash } from "crypto";
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+// Config Watcher — Living Config Auto-Updater
+//
+// Tracks a snapshot of the project state at the moment agent config files were
+// generated. On subsequent calls it diffs the current state against that
+// snapshot and emits a targeted patch report — only the sections that actually
+// changed — so developers never have to regenerate everything from scratch.
+//
+// Snapshot store: ~/.gyo-agents/snapshots/{projectHash}.json
+// One file per project, keyed by a hash of the absolute project path.
+// ═══════════════════════════════════════════════════════════════════════════════
 
-export type ChangeSeverity = "high" | "medium" | "low";
+// ─── Constants ────────────────────────────────────────────────────────────────
 
-interface DirectorySnapshot {
+const SNAPSHOTS_DIR = join(dataDirectory, "snapshots");
+
+/** Top-level directories we always ignore when capturing structure. */
+const IGNORED_DIRS = new Set([
+    "node_modules", "vendor", "dist", "build", ".git", ".next",
+    "__pycache__", ".venv", "venv", "coverage", ".cache", "tmp", "temp",
+]);
+
+/** Agent config files we look for to detect which tools are in use. */
+const KNOWN_CONFIG_FILES = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".clinerules",
+    ".windsurfrules",
+    ".cursorrules",
+    "GEMINI.md",
+    "CONVENTIONS.md",
+    ".aider.conf.yml",
+    ".cursor/rules",
+    ".claude/settings.json",
+    ".roo/rules",
+    ".kiro/steering",
+    ".github/copilot-instructions.md",
+    ".continue/config.yaml",
+];
+
+/** Dependency manifest files we hash to detect dep changes. */
+const DEP_MANIFESTS = [
+    "package.json",
+    "composer.json",
+    "go.mod",
+    "requirements.txt",
+    "Gemfile",
+    "Cargo.toml",
+    "pyproject.toml",
+    "pom.xml",
+    "build.gradle",
+];
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface DirectoryState {
     topLevelDirs: string[];
+    topLevelFiles: string[];
+    totalTopLevel: number;
 }
 
-interface DependencySnapshot {
-    manifests: Record<string, string>; // filename → SHA-256
+export interface DependencyState {
+    presentManifests: string[];
+    /** SHA-256 hash of each manifest's content, keyed by filename */
+    manifestHashes: Record<string, string>;
+    /** Parsed dep names from package.json / composer.json if present */
     packageNames: string[];
 }
 
-interface GitSnapshot {
-    headHash: string;
-    commitCount: number;
-    isConventional: boolean;
+export interface GitSnapshotState {
+    headCommitHash: string;
+    totalCommits: number;
+    conventionalCommits: boolean;
     ticketPrefixes: string[];
-    topVerbs: string[];
+    topVerbs: Array<{ verb: string; count: number }>;
+    topDomains: Array<{ keyword: string; count: number }>;
+    recentExamples: string[];
+    averageMessageLength: number;
 }
 
-interface DomainSnapshot {
-    topKeywords: string[]; // top 8
-}
-
-interface AgentConfigSnapshot {
-    presentConfigs: string[];
-}
-
-export interface ProjectSnapshot {
-    label: string;
+export interface ConfigSnapshot {
+    version: number;
     projectPath: string;
+    projectHash: string;
     capturedAt: string;
-    directories: DirectorySnapshot;
-    dependencies: DependencySnapshot;
-    git: GitSnapshot;
-    domains: DomainSnapshot;
-    agentConfigs: AgentConfigSnapshot;
+    directories: DirectoryState;
+    dependencies: DependencyState;
+    git: GitSnapshotState | null;
+    detectedConfigFiles: string[];
+    /** Human-readable label set by the caller, e.g. "after initial generation" */
+    label?: string;
 }
 
-export interface ChangeEntry {
-    signal: string;
+// ─── Change & Patch types ─────────────────────────────────────────────────────
+
+export type ChangeSeverity = "high" | "medium" | "low";
+export type ChangeKind =
+    | "new_directories"
+    | "removed_directories"
+    | "dependency_changes"
+    | "commit_style_evolved"
+    | "domain_shift"
+    | "significant_commit_growth"
+    | "config_files_changed";
+
+export interface ConfigChange {
+    kind: ChangeKind;
     severity: ChangeSeverity;
-    description: string;
-    suggestedAction: string;
+    summary: string;
+    details: string[];
 }
 
-export interface SyncReport {
-    upToDate: boolean;
-    changeCount: number;
-    highCount: number;
-    mediumCount: number;
-    lowCount: number;
-    recommendRegeneration: boolean;
-    changes: ChangeEntry[];
-    snapshotLabel: string;
+export interface SuggestedPatch {
+    section: string;
+    affectedFiles: string[];
+    instruction: string;
+    suggestedContent?: string;
+}
+
+export interface ConfigSyncReport {
+    projectPath: string;
     snapshotAge: string;
+    capturedAt: string;
+    changesDetected: boolean;
+    changes: ConfigChange[];
+    suggestedPatches: SuggestedPatch[];
+    affectedFiles: string[];
+    regenerateRecommended: boolean;
+    summary: string;
 }
 
-// ─── Known agent config files ───────────────────────────────────────────────────
+// ─── Persistence ──────────────────────────────────────────────────────────────
 
-const KNOWN_AGENT_CONFIGS = [
-    "CLAUDE.md",
-    "AGENTS.md",
-    "GEMINI.md",
-    ".clinerules",
-    ".windsurfrules",
-    ".aider.conf.yml",
-    "CONVENTIONS.md",
-    ".cursorrules",
-    ".kiro",
-    ".continue",
-    ".github/copilot-instructions.md",
-    ".roo",
-    ".cursor/rules",
-];
-
-const IGNORED_DIRS = new Set([
-    "node_modules", "dist", "build", "vendor", ".git", ".next",
-    "out", "coverage", ".turbo", "tmp", ".cache",
-]);
-
-const MANIFEST_FILES = [
-    "package.json", "composer.json", "go.mod", "Gemfile", "requirements.txt",
-    "Pipfile", "pyproject.toml", "Cargo.toml", "pom.xml", "build.gradle",
-];
-
-// ─── Storage ───────────────────────────────────────────────────────────────────
-
-function getSnapshotDir(): string {
-    const dir = join(dataDirectory, "snapshots");
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    return dir;
+function ensureSnapshotsDir(): void {
+    if (!existsSync(SNAPSHOTS_DIR)) {
+        mkdirSync(SNAPSHOTS_DIR, { recursive: true });
+    }
 }
 
-function projectKey(projectPath: string): string {
-    return createHash("sha256").update(projectPath).digest("hex").slice(0, 16);
+function projectHash(projectPath: string): string {
+    return createHash("sha256").update(projectPath).digest("hex").slice(0, 12);
 }
 
 function snapshotPath(projectPath: string): string {
-    return join(getSnapshotDir(), `${projectKey(projectPath)}.json`);
+    ensureSnapshotsDir();
+    return join(SNAPSHOTS_DIR, `${projectHash(projectPath)}.json`);
 }
 
-function loadSnapshot(projectPath: string): ProjectSnapshot | null {
+export function loadSnapshot(projectPath: string): ConfigSnapshot | null {
     const p = snapshotPath(projectPath);
     if (!existsSync(p)) return null;
     try {
-        return JSON.parse(readFileSync(p, "utf-8")) as ProjectSnapshot;
+        return JSON.parse(readFileSync(p, "utf-8")) as ConfigSnapshot;
     } catch {
         return null;
     }
 }
 
-function saveSnapshot(snapshot: ProjectSnapshot): void {
+export function saveSnapshot(snapshot: ConfigSnapshot): void {
+    ensureSnapshotsDir();
     writeFileSync(snapshotPath(snapshot.projectPath), JSON.stringify(snapshot, null, 2), "utf-8");
 }
 
-// ─── Capture helpers ───────────────────────────────────────────────────────────
+// ─── State capture ────────────────────────────────────────────────────────────
 
-function captureDirectories(projectPath: string): DirectorySnapshot {
+function captureDirectories(projectPath: string): DirectoryState {
+    let entries: string[] = [];
     try {
-        const entries = readdirSync(projectPath, { withFileTypes: true });
-        const topLevelDirs = entries
-            .filter(e => e.isDirectory() && !IGNORED_DIRS.has(e.name) && !e.name.startsWith("."))
-            .map(e => e.name)
-            .sort();
-        return { topLevelDirs };
+        entries = readdirSync(projectPath);
     } catch {
-        return { topLevelDirs: [] };
+        return { topLevelDirs: [], topLevelFiles: [], totalTopLevel: 0 };
     }
+
+    const topLevelDirs: string[] = [];
+    const topLevelFiles: string[] = [];
+
+    for (const entry of entries) {
+        if (entry.startsWith(".") && entry !== ".cursor" && entry !== ".claude" &&
+            entry !== ".roo" && entry !== ".kiro" && entry !== ".github") continue;
+        const full = join(projectPath, entry);
+        try {
+            const st = statSync(full);
+            if (st.isDirectory()) {
+                if (!IGNORED_DIRS.has(entry)) topLevelDirs.push(entry);
+            } else {
+                topLevelFiles.push(entry);
+            }
+        } catch {
+            // skip unreadable entries
+        }
+    }
+
+    return {
+        topLevelDirs: topLevelDirs.sort(),
+        topLevelFiles: topLevelFiles.sort(),
+        totalTopLevel: topLevelDirs.length + topLevelFiles.length,
+    };
 }
 
-function sha256File(filePath: string): string {
+function hashFileContent(filePath: string): string {
     try {
-        return createHash("sha256").update(readFileSync(filePath)).digest("hex");
+        const content = readFileSync(filePath, "utf-8");
+        return createHash("sha256").update(content).digest("hex").slice(0, 16);
     } catch {
         return "";
     }
@@ -152,341 +221,671 @@ function sha256File(filePath: string): string {
 
 function parsePackageNames(projectPath: string): string[] {
     const pkgPath = join(projectPath, "package.json");
-    if (!existsSync(pkgPath)) return [];
-    try {
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-        return Object.keys({ ...pkg.dependencies, ...pkg.devDependencies }).slice(0, 30);
-    } catch {
-        return [];
-    }
-}
-
-function captureDependencies(projectPath: string): DependencySnapshot {
-    const manifests: Record<string, string> = {};
-    for (const file of MANIFEST_FILES) {
-        const full = join(projectPath, file);
-        if (existsSync(full)) manifests[file] = sha256File(full);
-    }
-    return { manifests, packageNames: parsePackageNames(projectPath) };
-}
-
-function runGit(projectPath: string, ...args: string[]): string {
-    return execFileSync("git", args, { cwd: projectPath, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"], timeout: 15_000 }).trim();
-}
-
-function captureGit(projectPath: string): GitSnapshot {
-    try {
-        const headHash = runGit(projectPath, "rev-parse", "HEAD");
-        const commitCount = parseInt(runGit(projectPath, "rev-list", "--count", "HEAD"), 10) || 0;
-
-        const msgs = runGit(projectPath, "log", "--pretty=%s", "-n", "200").split("\n").filter(Boolean);
-        const conventional = msgs.filter(m => /^(feat|fix|chore|docs|style|refactor|test|perf|ci|build|revert)(\(.+\))?:/.test(m));
-        const isConventional = conventional.length > msgs.length * 0.4;
-
-        const ticketRe = /^([A-Z]{2,8}-\d+)/;
-        const ticketPrefixes = [...new Set(msgs.map(m => {
-            const match = m.match(ticketRe);
-            return match ? match[1].replace(/-\d+$/, "") : null;
-        }).filter(Boolean) as string[])].slice(0, 5);
-
-        const verbRe = /^(?:[a-z]+\(.+\):\s*|[A-Z]+-\d+\s+)?([a-z]+)/i;
-        const verbFreq: Record<string, number> = {};
-        for (const m of msgs) {
-            const match = m.match(verbRe);
-            if (match) {
-                const v = match[1].toLowerCase();
-                verbFreq[v] = (verbFreq[v] || 0) + 1;
-            }
+    if (existsSync(pkgPath)) {
+        try {
+            const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+            const deps = Object.keys(pkg.dependencies ?? {});
+            const devDeps = Object.keys(pkg.devDependencies ?? {});
+            return [...deps, ...devDeps].slice(0, 50); // cap to avoid noise
+        } catch {
+            return [];
         }
-        const topVerbs = Object.entries(verbFreq)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 8)
-            .map(([v]) => v);
-
-        return { headHash, commitCount, isConventional, ticketPrefixes, topVerbs };
-    } catch {
-        return { headHash: "", commitCount: 0, isConventional: false, ticketPrefixes: [], topVerbs: [] };
     }
-}
 
-function captureDomains(projectPath: string): DomainSnapshot {
-    try {
-        const msgs = runGit(projectPath, "log", "--pretty=%s%b", "-n", "300").split("\n").filter(Boolean);
-        const stopWords = new Set(["the", "a", "an", "and", "or", "in", "on", "to", "for", "of", "with", "fix", "add", "feat", "chore", "update", "change", "remove"]);
-        const freq: Record<string, number> = {};
-        for (const m of msgs) {
-            for (const word of m.toLowerCase().split(/\W+/)) {
-                if (word.length > 3 && !stopWords.has(word)) {
-                    freq[word] = (freq[word] || 0) + 1;
-                }
-            }
+    const composerPath = join(projectPath, "composer.json");
+    if (existsSync(composerPath)) {
+        try {
+            const composer = JSON.parse(readFileSync(composerPath, "utf-8"));
+            const reqs = Object.keys(composer.require ?? {});
+            const devReqs = Object.keys(composer["require-dev"] ?? {});
+            return [...reqs, ...devReqs].slice(0, 50);
+        } catch {
+            return [];
         }
-        const topKeywords = Object.entries(freq)
-            .sort((a, b) => b[1] - a[1])
-            .slice(0, 8)
-            .map(([k]) => k);
-        return { topKeywords };
+    }
+
+    return [];
+}
+
+function captureDependencies(projectPath: string): DependencyState {
+    const presentManifests: string[] = [];
+    const manifestHashes: Record<string, string> = {};
+
+    for (const manifest of DEP_MANIFESTS) {
+        const full = join(projectPath, manifest);
+        if (existsSync(full)) {
+            presentManifests.push(manifest);
+            manifestHashes[manifest] = hashFileContent(full);
+        }
+    }
+
+    return {
+        presentManifests,
+        manifestHashes,
+        packageNames: parsePackageNames(projectPath),
+    };
+}
+
+function git(cwd: string, args: string[]): string {
+    try {
+        return execFileSync("git", args, {
+            cwd,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+            timeout: 15_000,
+        }).trim();
     } catch {
-        return { topKeywords: [] };
+        return "";
     }
 }
 
-function captureAgentConfigs(projectPath: string): AgentConfigSnapshot {
-    const presentConfigs = KNOWN_AGENT_CONFIGS.filter(c => existsSync(join(projectPath, c)));
-    return { presentConfigs };
+function captureGitState(projectPath: string): GitSnapshotState | null {
+    const headHash = git(projectPath, ["rev-parse", "HEAD"]);
+    if (!headHash) return null;
+
+    const totalStr = git(projectPath, ["rev-list", "--count", "HEAD"]);
+    const totalCommits = parseInt(totalStr || "0", 10);
+
+    // Sample up to 200 recent commits for style
+    const rawLog = git(projectPath, ["log", "--no-merges", "--format=%s", "--max-count=200"]);
+    const messages = rawLog.split("\n").filter(Boolean);
+
+    const CONVENTIONAL_RE = /^(feat|fix|chore|docs|style|refactor|test|perf|build|ci|revert)(\(.+?\))?!?:\s/i;
+    const TICKET_RE = /^([A-Z]+-\d+|#\d+)[\s:]/;
+
+    const conventionalCount = messages.filter(m => CONVENTIONAL_RE.test(m)).length;
+    const conventionalCommits = messages.length > 0
+        ? conventionalCount / messages.length > 0.4
+        : false;
+
+    const ticketMap = new Map<string, number>();
+    for (const m of messages) {
+        const match = m.match(TICKET_RE);
+        if (match) {
+            const prefix = match[1].replace(/\d+/, "NNN");
+            ticketMap.set(prefix, (ticketMap.get(prefix) ?? 0) + 1);
+        }
+    }
+    const ticketPrefixes = [...ticketMap.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([k]) => k);
+
+    const verbMap = new Map<string, number>();
+    const DOMAIN_SEEDS = [
+        "auth", "user", "order", "payment", "product", "cart", "api",
+        "db", "database", "cache", "redis", "queue", "event", "email",
+        "notification", "admin", "report", "search", "upload", "file",
+        "module", "config", "deploy", "migration", "model", "test",
+        "service", "controller", "route", "middleware", "hook",
+    ];
+    const domainMap = new Map<string, number>();
+    const allMessages = messages.join(" ").toLowerCase();
+
+    for (const m of messages) {
+        const cleaned = m
+            .replace(/^(feat|fix|chore|docs|style|refactor|test|perf|build|ci|revert)(\(.+?\))?!?:\s*/i, "")
+            .toLowerCase();
+        const words = cleaned.split(/[\s\-_:()[\]]+/);
+        const first = words[0];
+        if (first && first.length > 2 && /^[a-z]+$/.test(first)) {
+            verbMap.set(first, (verbMap.get(first) ?? 0) + 1);
+        }
+    }
+    for (const seed of DOMAIN_SEEDS) {
+        const re = new RegExp(`\\b${seed}s?\\b`, "gi");
+        const matches = allMessages.match(re);
+        if (matches && matches.length > 0) domainMap.set(seed, matches.length);
+    }
+
+    const topVerbs = [...verbMap.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([verb, count]) => ({ verb, count }));
+
+    const topDomains = [...domainMap.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([keyword, count]) => ({ keyword, count }));
+
+    const avgLen = messages.length > 0
+        ? Math.round(messages.reduce((s, m) => s + m.length, 0) / messages.length)
+        : 0;
+
+    return {
+        headCommitHash: headHash,
+        totalCommits,
+        conventionalCommits,
+        ticketPrefixes,
+        topVerbs,
+        topDomains,
+        recentExamples: messages.slice(0, 5),
+        averageMessageLength: avgLen,
+    };
 }
 
-// ─── Public: snapshot ──────────────────────────────────────────────────────────
+function detectConfigFiles(projectPath: string): string[] {
+    const found: string[] = [];
+    for (const cfg of KNOWN_CONFIG_FILES) {
+        if (existsSync(join(projectPath, cfg))) {
+            found.push(cfg);
+        }
+    }
+    return found;
+}
 
-export function snapshotConfig(projectPath: string, label = "baseline"): ProjectSnapshot {
-    const snapshot: ProjectSnapshot = {
-        label,
+// ─── Public: takeSnapshot ─────────────────────────────────────────────────────
+
+/**
+ * Capture the current state of a project and persist it as a snapshot.
+ * Call this immediately after generating agent config files so the baseline
+ * reflects what was actually written.
+ */
+export function takeSnapshot(projectPath: string, label?: string): ConfigSnapshot {
+    const snapshot: ConfigSnapshot = {
+        version: 1,
         projectPath,
+        projectHash: projectHash(projectPath),
         capturedAt: new Date().toISOString(),
         directories: captureDirectories(projectPath),
         dependencies: captureDependencies(projectPath),
-        git: captureGit(projectPath),
-        domains: captureDomains(projectPath),
-        agentConfigs: captureAgentConfigs(projectPath),
+        git: captureGitState(projectPath),
+        detectedConfigFiles: detectConfigFiles(projectPath),
+        label,
     };
     saveSnapshot(snapshot);
     return snapshot;
 }
 
-// ─── Public: sync (diff) ───────────────────────────────────────────────────────
+// ─── Diffing ──────────────────────────────────────────────────────────────────
 
-export function syncAgentConfig(projectPath: string): SyncReport {
-    const baseline = loadSnapshot(projectPath);
-    if (!baseline) {
+function diffDirectories(
+    old: DirectoryState,
+    current: DirectoryState
+): ConfigChange | null {
+    const oldSet = new Set(old.topLevelDirs);
+    const curSet = new Set(current.topLevelDirs);
+
+    const added = current.topLevelDirs.filter(d => !oldSet.has(d));
+    const removed = old.topLevelDirs.filter(d => !curSet.has(d));
+
+    if (added.length === 0 && removed.length === 0) return null;
+
+    const details: string[] = [];
+    if (added.length > 0) details.push(`New directories: ${added.map(d => `\`${d}/\``).join(", ")}`);
+    if (removed.length > 0) details.push(`Removed directories: ${removed.map(d => `\`${d}/\``).join(", ")}`);
+
+    return {
+        kind: added.length > 0 ? "new_directories" : "removed_directories",
+        severity: added.length > 0 ? "high" : "medium",
+        summary: added.length > 0
+            ? `${added.length} new top-level director${added.length > 1 ? "ies" : "y"} detected`
+            : `${removed.length} director${removed.length > 1 ? "ies" : "y"} removed`,
+        details,
+    };
+}
+
+function diffDependencies(
+    old: DependencyState,
+    current: DependencyState
+): ConfigChange | null {
+    const changedManifests: string[] = [];
+    const newManifests: string[] = [];
+
+    for (const manifest of current.presentManifests) {
+        if (!old.presentManifests.includes(manifest)) {
+            newManifests.push(manifest);
+        } else if (old.manifestHashes[manifest] !== current.manifestHashes[manifest]) {
+            changedManifests.push(manifest);
+        }
+    }
+
+    if (changedManifests.length === 0 && newManifests.length === 0) return null;
+
+    const details: string[] = [];
+    if (changedManifests.length > 0) {
+        details.push(`Modified manifests: ${changedManifests.join(", ")}`);
+    }
+    if (newManifests.length > 0) {
+        details.push(`New manifests detected: ${newManifests.join(", ")}`);
+    }
+
+    // Surface newly added package names for context
+    const oldNames = new Set(old.packageNames);
+    const newNames = current.packageNames.filter(n => !oldNames.has(n));
+    if (newNames.length > 0 && newNames.length <= 10) {
+        details.push(`New packages: ${newNames.slice(0, 10).join(", ")}`);
+    } else if (newNames.length > 10) {
+        details.push(`${newNames.length} new packages added`);
+    }
+
+    return {
+        kind: "dependency_changes",
+        severity: "medium",
+        summary: `Dependencies changed (${changedManifests.length} modified, ${newManifests.length} new manifest${newManifests.length !== 1 ? "s" : ""})`,
+        details,
+    };
+}
+
+function diffGit(
+    old: GitSnapshotState | null,
+    current: GitSnapshotState | null
+): ConfigChange[] {
+    if (!old || !current) return [];
+
+    const changes: ConfigChange[] = [];
+
+    // ── Significant commit growth ──
+    const newCommits = current.totalCommits - old.totalCommits;
+    if (newCommits >= 30) {
+        changes.push({
+            kind: "significant_commit_growth",
+            severity: newCommits >= 100 ? "high" : "medium",
+            summary: `${newCommits} new commit${newCommits !== 1 ? "s" : ""} since last snapshot`,
+            details: [
+                `Was: ${old.totalCommits} commits → Now: ${current.totalCommits} commits`,
+                "Commit style examples and domain focus may have evolved.",
+            ],
+        });
+    }
+
+    // ── Commit style change ──
+    const styleChanged = old.conventionalCommits !== current.conventionalCommits;
+    const formatChanged = Math.abs(old.averageMessageLength - current.averageMessageLength) > 15;
+    const ticketChanged =
+        JSON.stringify(old.ticketPrefixes.sort()) !== JSON.stringify(current.ticketPrefixes.sort());
+
+    if (styleChanged || ticketChanged) {
+        const details: string[] = [];
+        if (styleChanged) {
+            details.push(
+                current.conventionalCommits
+                    ? "Commit style shifted TO conventional commits (feat/fix/chore)"
+                    : "Commit style shifted AWAY from conventional commits"
+            );
+        }
+        if (ticketChanged) {
+            const oldPfx = old.ticketPrefixes.join(", ") || "none";
+            const curPfx = current.ticketPrefixes.join(", ") || "none";
+            details.push(`Ticket prefixes: ${oldPfx} → ${curPfx}`);
+        }
+        if (formatChanged) {
+            details.push(
+                `Average message length: ${old.averageMessageLength} chars → ${current.averageMessageLength} chars`
+            );
+        }
+        details.push("Recent examples:", ...current.recentExamples.slice(0, 3).map(e => `  • ${e}`));
+
+        changes.push({
+            kind: "commit_style_evolved",
+            severity: "high",
+            summary: "Commit message format has changed",
+            details,
+        });
+    }
+
+    // ── Domain shift ──
+    const oldTopDomains = new Set(old.topDomains.slice(0, 5).map(d => d.keyword));
+    const newTopDomains = current.topDomains.slice(0, 5).map(d => d.keyword);
+    const newDomainEntries = newTopDomains.filter(d => !oldTopDomains.has(d));
+
+    if (newDomainEntries.length >= 2) {
+        changes.push({
+            kind: "domain_shift",
+            severity: "medium",
+            summary: `${newDomainEntries.length} new domain focus area${newDomainEntries.length > 1 ? "s" : ""} detected`,
+            details: [
+                `New top domains: ${newDomainEntries.join(", ")}`,
+                `Previous top domains: ${[...oldTopDomains].join(", ")}`,
+                "The Developer Style section's Domain Focus table may be outdated.",
+            ],
+        });
+    }
+
+    return changes;
+}
+
+function diffConfigFiles(
+    old: string[],
+    current: string[]
+): ConfigChange | null {
+    const oldSet = new Set(old);
+    const curSet = new Set(current);
+
+    const added = current.filter(f => !oldSet.has(f));
+    const removed = old.filter(f => !curSet.has(f));
+
+    if (added.length === 0 && removed.length === 0) return null;
+
+    const details: string[] = [];
+    if (added.length > 0) details.push(`New config files: ${added.join(", ")}`);
+    if (removed.length > 0) details.push(`Removed config files: ${removed.join(", ")}`);
+
+    return {
+        kind: "config_files_changed",
+        severity: "low",
+        summary: `Agent config files changed (${added.length} added, ${removed.length} removed)`,
+        details,
+    };
+}
+
+// ─── Patch suggestion generation ─────────────────────────────────────────────
+
+/**
+ * Maps detected changes to specific patch instructions.
+ * Returns a list of targeted edits the developer (or agent) should make.
+ */
+function buildPatches(
+    changes: ConfigChange[],
+    detectedConfigs: string[]
+): SuggestedPatch[] {
+    const patches: SuggestedPatch[] = [];
+
+    // Determine which agent config files are in play
+    const hasCursor = detectedConfigs.some(f => f.includes(".cursor"));
+    const hasClaude = detectedConfigs.some(f => f.includes("CLAUDE") || f.includes(".claude"));
+    const hasCline = detectedConfigs.includes(".clinerules");
+    const hasWindsurf = detectedConfigs.includes(".windsurfrules");
+    const hasAgentsMd = detectedConfigs.includes("AGENTS.md");
+
+    const structureFiles: string[] = [];
+    if (hasCursor) structureFiles.push(".cursor/rules/architecture.mdc");
+    if (hasClaude) structureFiles.push("CLAUDE.md");
+    if (hasCline) structureFiles.push(".clinerules");
+    if (hasWindsurf) structureFiles.push(".windsurfrules");
+    if (hasAgentsMd) structureFiles.push("AGENTS.md");
+
+    const styleFiles: string[] = [];
+    if (hasCursor) styleFiles.push(".cursor/rules/developer-style.mdc");
+    if (hasClaude) styleFiles.push("CLAUDE.md");
+    if (hasCline) styleFiles.push(".clinerules");
+    if (hasWindsurf) styleFiles.push(".windsurfrules");
+
+    for (const change of changes) {
+        switch (change.kind) {
+            case "new_directories":
+            case "removed_directories":
+                patches.push({
+                    section: "Project Structure / Architecture",
+                    affectedFiles: structureFiles,
+                    instruction: [
+                        `Update the 'Project Structure' or 'Architecture at a Glance' section to reflect the current top-level layout.`,
+                        `${change.details.join(". ")}.`,
+                        `Run the generation prompt's Step 1 (Analyze Project) again and apply only the directory tree and module anatomy sections.`,
+                    ].join(" "),
+                });
+                break;
+
+            case "dependency_changes":
+                patches.push({
+                    section: "Dependencies / Architecture",
+                    affectedFiles: structureFiles,
+                    instruction: [
+                        `Update any references to frameworks, libraries, or tooling versions.`,
+                        `${change.details.join(". ")}.`,
+                        `Check 'Essential Commands', 'Code Quality', and 'Architecture' sections for stale tool names or versions.`,
+                    ].join(" "),
+                });
+                break;
+
+            case "commit_style_evolved":
+                patches.push({
+                    section: "Commit Format / Developer Style",
+                    affectedFiles: styleFiles,
+                    instruction: [
+                        `Update the 'Commit Format' and 'Developer Style' sections with the new commit pattern.`,
+                        `${change.details.slice(0, 2).join(". ")}.`,
+                        `Replace the example commits with the new ones listed above.`,
+                    ].join(" "),
+                });
+                break;
+
+            case "domain_shift":
+                patches.push({
+                    section: "Domain Focus / Developer Style",
+                    affectedFiles: styleFiles,
+                    instruction: [
+                        `Update the 'Domain Focus' table to reflect new high-frequency areas.`,
+                        `${change.details[0]}.`,
+                        `Run \`analyze_git_style_on_the_fly\` on this project and copy the updated domain keyword table.`,
+                    ].join(" "),
+                });
+                break;
+
+            case "significant_commit_growth":
+                patches.push({
+                    section: "Developer Style (full refresh recommended)",
+                    affectedFiles: styleFiles,
+                    instruction: [
+                        `${change.summary}. With this many new commits, the entire Developer Style section should be refreshed.`,
+                        `Run \`analyze_git_style_on_the_fly\` and apply the full updated report to the style sections.`,
+                    ].join(" "),
+                });
+                break;
+
+            case "config_files_changed":
+                patches.push({
+                    section: "Agent Config Inventory",
+                    affectedFiles: ["AGENTS.md"],
+                    instruction: [
+                        `Update the 'Rules' section in AGENTS.md to reference the current set of config files.`,
+                        `${change.details.join(". ")}.`,
+                    ].join(" "),
+                });
+                break;
+        }
+    }
+
+    // Deduplicate by section
+    const seen = new Map<string, SuggestedPatch>();
+    for (const p of patches) {
+        if (!seen.has(p.section)) seen.set(p.section, p);
+    }
+    return [...seen.values()];
+}
+
+// ─── Snapshot age helper ──────────────────────────────────────────────────────
+
+function humanAge(capturedAt: string): string {
+    const ms = Date.now() - new Date(capturedAt).getTime();
+    const mins = Math.floor(ms / 60_000);
+    const hours = Math.floor(ms / 3_600_000);
+    const days = Math.floor(ms / 86_400_000);
+
+    if (days >= 1) return `${days} day${days !== 1 ? "s" : ""} ago`;
+    if (hours >= 1) return `${hours} hour${hours !== 1 ? "s" : ""} ago`;
+    if (mins >= 1) return `${mins} minute${mins !== 1 ? "s" : ""} ago`;
+    return "just now";
+}
+
+// ─── Public: syncAgentConfig ──────────────────────────────────────────────────
+
+/**
+ * Compare the current project state against the stored snapshot and return a
+ * targeted patch report describing what has changed and exactly which config
+ * file sections need to be updated.
+ *
+ * Returns an error-shaped report if no snapshot exists yet (user should call
+ * snapshot_config first, typically right after generating agent configs).
+ */
+export function syncAgentConfig(projectPath: string): ConfigSyncReport {
+    const snapshot = loadSnapshot(projectPath);
+
+    if (!snapshot) {
         return {
-            upToDate: false,
-            changeCount: 0,
-            highCount: 0,
-            mediumCount: 0,
-            lowCount: 0,
-            recommendRegeneration: false,
-            changes: [{
-                signal: "no-snapshot",
-                severity: "high",
-                description: "No baseline snapshot found for this project.",
-                suggestedAction: "Run snapshot_config first to capture a baseline, then call sync_agent_config after making changes.",
-            }],
-            snapshotLabel: "",
-            snapshotAge: "",
+            projectPath,
+            snapshotAge: "never",
+            capturedAt: "",
+            changesDetected: false,
+            changes: [],
+            suggestedPatches: [],
+            affectedFiles: [],
+            regenerateRecommended: false,
+            summary:
+                `No snapshot found for this project. ` +
+                `Call \`snapshot_config\` right after generating your agent config files to establish a baseline. ` +
+                `Future calls to \`sync_agent_config\` will diff against that baseline.`,
         };
     }
 
-    const live = {
-        directories: captureDirectories(projectPath),
-        dependencies: captureDependencies(projectPath),
-        git: captureGit(projectPath),
-        domains: captureDomains(projectPath),
-        agentConfigs: captureAgentConfigs(projectPath),
-    };
+    // Capture current state
+    const currentDirs = captureDirectories(projectPath);
+    const currentDeps = captureDependencies(projectPath);
+    const currentGit = captureGitState(projectPath);
+    const currentConfigs = detectConfigFiles(projectPath);
 
-    const changes: ChangeEntry[] = [];
+    // Diff each dimension
+    const changes: ConfigChange[] = [];
 
-    // 1. Directory changes
-    const oldDirs = new Set(baseline.directories.topLevelDirs);
-    const newDirs = new Set(live.directories.topLevelDirs);
-    const addedDirs = live.directories.topLevelDirs.filter(d => !oldDirs.has(d));
-    const removedDirs = baseline.directories.topLevelDirs.filter(d => !newDirs.has(d));
+    const dirChange = diffDirectories(snapshot.directories, currentDirs);
+    if (dirChange) changes.push(dirChange);
 
-    if (addedDirs.length > 0) {
-        changes.push({
-            signal: "new-directories",
-            severity: "high",
-            description: `New top-level directories detected: ${addedDirs.join(", ")}`,
-            suggestedAction: "Update the Project Structure / Architecture section of your agent config files.",
-        });
+    const depChange = diffDependencies(snapshot.dependencies, currentDeps);
+    if (depChange) changes.push(depChange);
+
+    const gitChanges = diffGit(snapshot.git, currentGit);
+    changes.push(...gitChanges);
+
+    const cfgChange = diffConfigFiles(snapshot.detectedConfigFiles, currentConfigs);
+    if (cfgChange) changes.push(cfgChange);
+
+    // Build patches
+    const suggestedPatches = buildPatches(changes, currentConfigs);
+
+    // Collect all affected files (unique, sorted)
+    const affectedFilesSet = new Set<string>();
+    for (const p of suggestedPatches) {
+        for (const f of p.affectedFiles) affectedFilesSet.add(f);
     }
-    if (removedDirs.length > 0) {
-        changes.push({
-            signal: "removed-directories",
-            severity: "medium",
-            description: `Removed top-level directories: ${removedDirs.join(", ")}`,
-            suggestedAction: "Update the Project Structure section to remove stale directory references.",
-        });
-    }
+    const affectedFiles = [...affectedFilesSet].sort();
 
-    // 2. Dependency manifest changes
-    for (const [file, oldHash] of Object.entries(baseline.dependencies.manifests)) {
-        const newHash = live.dependencies.manifests[file];
-        if (newHash && newHash !== oldHash) {
-            changes.push({
-                signal: "manifest-changed",
-                severity: "medium",
-                description: `${file} has changed since the snapshot.`,
-                suggestedAction: "Update the Architecture / Essential Commands sections with new dependencies.",
-            });
-        }
-    }
-    // New manifests not in baseline
-    for (const file of Object.keys(live.dependencies.manifests)) {
-        if (!(file in baseline.dependencies.manifests)) {
-            changes.push({
-                signal: "new-manifest",
-                severity: "medium",
-                description: `New dependency manifest found: ${file}`,
-                suggestedAction: "Update the Architecture section to reflect the new package ecosystem.",
-            });
-        }
-    }
+    // Decide if a full regeneration is more practical than patching
+    const highSeverityCount = changes.filter(c => c.severity === "high").length;
+    const regenerateRecommended = highSeverityCount >= 2;
 
-    // 3. Commit style evolution
-    if (baseline.git.isConventional !== live.git.isConventional) {
-        changes.push({
-            signal: "commit-style-changed",
-            severity: "high",
-            description: `Commit style changed from ${baseline.git.isConventional ? "conventional" : "freeform"} to ${live.git.isConventional ? "conventional" : "freeform"}.`,
-            suggestedAction: "Update the Commit Format section and Developer Style in all agent config files.",
-        });
+    // Build summary
+    let summary: string;
+    if (changes.length === 0) {
+        summary = `✅ Agent configs are up to date. No meaningful changes detected since the snapshot was taken ${humanAge(snapshot.capturedAt)}.`;
+    } else {
+        const highCount = changes.filter(c => c.severity === "high").length;
+        const medCount = changes.filter(c => c.severity === "medium").length;
+        summary = [
+            `⚠️  ${changes.length} change${changes.length !== 1 ? "s" : ""} detected since snapshot (${humanAge(snapshot.capturedAt)}).`,
+            highCount > 0 ? `${highCount} high-severity` : "",
+            medCount > 0 ? `${medCount} medium-severity` : "",
+            regenerateRecommended
+                ? "Full regeneration recommended — too many high-impact changes to patch individually."
+                : `${suggestedPatches.length} targeted patch${suggestedPatches.length !== 1 ? "es" : ""} suggested.`,
+        ].filter(Boolean).join(" ");
     }
-
-    // 4. New ticket prefix patterns
-    const oldPrefixes = new Set(baseline.git.ticketPrefixes);
-    const newPrefixes = live.git.ticketPrefixes.filter(p => !oldPrefixes.has(p));
-    if (newPrefixes.length > 0) {
-        changes.push({
-            signal: "new-ticket-prefix",
-            severity: "high",
-            description: `New ticket prefix pattern(s) detected: ${newPrefixes.join(", ")}`,
-            suggestedAction: "Update the Commit Format section with the new ticket prefix pattern.",
-        });
-    }
-
-    // 5. New commits since snapshot
-    const commitDelta = live.git.commitCount - baseline.git.commitCount;
-    if (commitDelta >= 30) {
-        changes.push({
-            signal: "many-new-commits",
-            severity: "medium",
-            description: `${commitDelta} new commits since snapshot.`,
-            suggestedAction: "Refresh the Developer Style section — commit patterns and top verbs may have shifted.",
-        });
-    }
-
-    // 6. Domain focus shift
-    const oldKeywords = new Set(baseline.domains.topKeywords);
-    const newKeywords = live.domains.topKeywords.filter(k => !oldKeywords.has(k));
-    if (newKeywords.length >= 2) {
-        changes.push({
-            signal: "domain-focus-shift",
-            severity: "medium",
-            description: `Domain focus shifted — ${newKeywords.length} new top keywords: ${newKeywords.join(", ")}`,
-            suggestedAction: "Update the Domain Focus table in your agent config files.",
-        });
-    }
-
-    // 7. Agent config files added / removed
-    const oldConfigs = new Set(baseline.agentConfigs.presentConfigs);
-    const newConfigs = new Set(live.agentConfigs.presentConfigs);
-    const addedConfigs = live.agentConfigs.presentConfigs.filter(c => !oldConfigs.has(c));
-    const removedConfigs = baseline.agentConfigs.presentConfigs.filter(c => !newConfigs.has(c));
-    if (addedConfigs.length > 0 || removedConfigs.length > 0) {
-        const desc = [
-            addedConfigs.length ? `Added: ${addedConfigs.join(", ")}` : "",
-            removedConfigs.length ? `Removed: ${removedConfigs.join(", ")}` : "",
-        ].filter(Boolean).join(". ");
-        changes.push({
-            signal: "agent-configs-changed",
-            severity: "low",
-            description: `Agent config files changed. ${desc}`,
-            suggestedAction: "Update the AGENTS.md rules reference to reflect the current set of config files.",
-        });
-    }
-
-    const highCount = changes.filter(c => c.severity === "high").length;
-    const mediumCount = changes.filter(c => c.severity === "medium").length;
-    const lowCount = changes.filter(c => c.severity === "low").length;
-    const recommendRegeneration = highCount >= 2;
-
-    const ageMs = Date.now() - new Date(baseline.capturedAt).getTime();
-    const ageDays = Math.floor(ageMs / 86_400_000);
-    const snapshotAge = ageDays === 0 ? "today" : ageDays === 1 ? "1 day ago" : `${ageDays} days ago`;
 
     return {
-        upToDate: changes.length === 0,
-        changeCount: changes.length,
-        highCount,
-        mediumCount,
-        lowCount,
-        recommendRegeneration,
+        projectPath,
+        snapshotAge: humanAge(snapshot.capturedAt),
+        capturedAt: snapshot.capturedAt,
+        changesDetected: changes.length > 0,
         changes,
-        snapshotLabel: baseline.label,
-        snapshotAge,
+        suggestedPatches,
+        affectedFiles,
+        regenerateRecommended,
+        summary,
     };
 }
 
-// ─── Formatters ────────────────────────────────────────────────────────────────
+// ─── Formatting ───────────────────────────────────────────────────────────────
 
-export function formatSnapshotSummary(snapshot: ProjectSnapshot): string {
-    const lines = [
-        `## Snapshot captured — "${snapshot.label}"`,
-        `**Project:** ${snapshot.projectPath}`,
-        `**Captured at:** ${snapshot.capturedAt}`,
+export function formatSyncReport(report: ConfigSyncReport): string {
+    const lines: string[] = [
+        "# Config Sync Report",
+        `**Project:** \`${report.projectPath}\``,
+        `**Snapshot age:** ${report.snapshotAge}`,
         "",
-        "### What was recorded",
-        `- **Directories (${snapshot.directories.topLevelDirs.length}):** ${snapshot.directories.topLevelDirs.join(", ") || "(none)"}`,
-        `- **Manifests tracked:** ${Object.keys(snapshot.dependencies.manifests).join(", ") || "(none)"}`,
-        `- **Git:** ${snapshot.git.commitCount} commits, ${snapshot.git.isConventional ? "conventional" : "freeform"} style${snapshot.git.ticketPrefixes.length ? `, prefixes: ${snapshot.git.ticketPrefixes.join(", ")}` : ""}`,
-        `- **Top domains:** ${snapshot.domains.topKeywords.join(", ") || "(none)"}`,
-        `- **Agent configs present:** ${snapshot.agentConfigs.presentConfigs.join(", ") || "(none)"}`,
+        `## Summary`,
+        report.summary,
         "",
-        "Call `sync_agent_config` at any time to check for drift against this baseline.",
     ];
+
+    if (!report.changesDetected) return lines.join("\n");
+
+    // ── Changes ──
+    lines.push("## Changes Detected");
+    lines.push("");
+    for (const change of report.changes) {
+        const icon = change.severity === "high" ? "🔴" : change.severity === "medium" ? "🟡" : "🔵";
+        lines.push(`### ${icon} ${change.summary}`);
+        for (const detail of change.details) {
+            lines.push(`- ${detail}`);
+        }
+        lines.push("");
+    }
+
+    // ── Patches ──
+    if (report.suggestedPatches.length > 0) {
+        lines.push("---");
+        lines.push("");
+
+        if (report.regenerateRecommended) {
+            lines.push(
+                "> 💡 **Regeneration recommended.** The changes are significant enough that re-running the full `GENERATE_AGENT.md` prompt will be faster than patching manually."
+            );
+            lines.push("");
+        }
+
+        lines.push("## Suggested Patches");
+        lines.push("");
+        lines.push("Apply these targeted edits to bring your agent configs back in sync:");
+        lines.push("");
+
+        for (let i = 0; i < report.suggestedPatches.length; i++) {
+            const patch = report.suggestedPatches[i];
+            lines.push(`### Patch ${i + 1}: ${patch.section}`);
+            lines.push(`**Files to update:** ${patch.affectedFiles.map(f => `\`${f}\``).join(", ")}`);
+            lines.push("");
+            lines.push(patch.instruction);
+            lines.push("");
+        }
+    }
+
+    // ── Affected files summary ──
+    if (report.affectedFiles.length > 0) {
+        lines.push("---");
+        lines.push("");
+        lines.push("## Files Requiring Updates");
+        for (const f of report.affectedFiles) {
+            lines.push(`- \`${f}\``);
+        }
+        lines.push("");
+        lines.push(
+            "> After applying patches, run `snapshot_config` again to update the baseline."
+        );
+    }
+
     return lines.join("\n");
 }
 
-const SEVERITY_ICON: Record<ChangeSeverity, string> = {
-    high: "🔴 High",
-    medium: "🟡 Medium",
-    low: "🔵 Low",
-};
-
-export function formatSyncReport(report: SyncReport): string {
-    if (report.changes.length === 1 && report.changes[0].signal === "no-snapshot") {
-        return [
-            "## sync_agent_config — No baseline found",
-            "",
-            report.changes[0].description,
-            "",
-            `**Next step:** ${report.changes[0].suggestedAction}`,
-        ].join("\n");
-    }
-
-    if (report.upToDate) {
-        return [
-            "## sync_agent_config — ✅ Up to date",
-            "",
-            `Baseline: "${report.snapshotLabel}" (${report.snapshotAge})`,
-            "No meaningful changes detected. Your agent configs accurately reflect the current project state.",
-        ].join("\n");
-    }
-
-    const lines = [
-        `## sync_agent_config — ${report.changeCount} change(s) detected`,
+export function formatSnapshotConfirmation(snapshot: ConfigSnapshot): string {
+    const lines: string[] = [
+        "# Config Snapshot Saved",
         "",
-        `Baseline: "${report.snapshotLabel}" (${report.snapshotAge})`,
-        `Severity breakdown: ${report.highCount > 0 ? `🔴 ${report.highCount} high` : ""} ${report.mediumCount > 0 ? `🟡 ${report.mediumCount} medium` : ""} ${report.lowCount > 0 ? `🔵 ${report.lowCount} low` : ""}`.trim(),
+        `**Project:** \`${snapshot.projectPath}\``,
+        `**Captured at:** ${snapshot.capturedAt}`,
+        snapshot.label ? `**Label:** ${snapshot.label}` : "",
         "",
-    ];
-
-    if (report.recommendRegeneration) {
-        lines.push("⚡ **Regeneration recommended** — 2+ high-severity changes detected. It's faster to re-run `generate_full_agent_context` and regenerate your configs.");
-        lines.push("");
-    }
-
-    lines.push("### Changes");
-    for (const change of report.changes) {
-        lines.push(`#### ${SEVERITY_ICON[change.severity]} — ${change.signal}`);
-        lines.push(change.description);
-        lines.push(`**Fix:** ${change.suggestedAction}`);
-        lines.push("");
-    }
-
-    lines.push("---");
-    lines.push("After applying patches, run `snapshot_config` again to advance the baseline.");
+        "## What was recorded",
+        "",
+        `- **Top-level dirs (${snapshot.directories.topLevelDirs.length}):** ${snapshot.directories.topLevelDirs.map(d => `\`${d}/\``).join(", ") || "none"}`,
+        `- **Dep manifests (${snapshot.dependencies.presentManifests.length}):** ${snapshot.dependencies.presentManifests.join(", ") || "none"}`,
+        `- **Packages tracked:** ${snapshot.dependencies.packageNames.length}`,
+        snapshot.git
+            ? `- **Git HEAD:** \`${snapshot.git.headCommitHash.slice(0, 8)}\` (${snapshot.git.totalCommits} commits)`
+            : "- **Git:** not a git repo or no commits",
+        `- **Agent config files (${snapshot.detectedConfigFiles.length}):** ${snapshot.detectedConfigFiles.join(", ") || "none detected"}`,
+        "",
+        "---",
+        "",
+        "Run `sync_agent_config` at any time to detect what has changed since this snapshot.",
+    ].filter(line => line !== undefined);
 
     return lines.join("\n");
 }

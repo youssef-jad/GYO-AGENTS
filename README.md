@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/youssef-jad-gyo-agents-badge.png)](https://mseep.ai/app/youssef-jad-gyo-agents)
+
 ## 🚀 MCP Server: The Developer Digital Twin
 
 Instead of copy-pasting prompts, connect the **GYO-AGENTS MCP Server** to any AI tool (Cursor, Claude Code, Cline, Kiro, Windsurf) to instantly transform it into your **Digital Twin**. 
@@ -27,7 +29,7 @@ Add to your tool's MCP config (replace `/ABSOLUTE/PATH/TO/GYO-AGENTS`):
 * **GYO Guardrails:** Turn a correction into an approved project rule that agents can load and check against their diffs. [Setup and example](mcp-server/README.md#gyo-guardrails)
 * **Digital Twin Memory (4):** `get_digital_twin_profile`, `memorize`, `forget_memory`, `search_memory` — Teach AI your global preferences.
 * **Intelligence & Validation (7):** `generate_full_agent_context`, `search_prompts`, `analyze_git_style_on_the_fly`, `get_domain_context`, `validate_api_response`, `check_cache_usage`.
-* **Living Config Auto-Updater (2):** `snapshot_config`, `sync_agent_config` — Detect and fix config drift without full regeneration.
+* **Living Config Auto-Updater (2):** `snapshot_config`, `sync_agent_config` — Keep agent configs in sync as your codebase evolves, with targeted per-section patch suggestions.
 
 📖 Full setup guide & tool details → [`mcp-server/README.md`](mcp-server/README.md) · Config snippets → [`examples/mcp-configs/`](examples/mcp-configs/)
 

@@ -28,7 +28,12 @@ import { twinMemory, MemoryType } from "./twin-memory.js";
 import { learnFromCodebase, formatBehavioralDNA, loadDNA, generateManifesto } from "./behavioral-dna.js";
 import { decisionJournal, formatDecision, formatDecisionList } from "./decision-journal.js";
 import { correctionMap, formatCorrectionPatterns, formatCorrectionStats, type CorrectionCategory } from "./correction-map.js";
-import { snapshotConfig, syncAgentConfig, formatSnapshotSummary, formatSyncReport } from "./config-watcher.js";
+import {
+    takeSnapshot,
+    syncAgentConfig,
+    formatSyncReport,
+    formatSnapshotConfirmation,
+} from "./config-watcher.js";
 import { checkChanges, getTaskRules, proposeGuardrail } from "./guardrails.js";
 import { runGuardrailCli } from "./guardrail-cli.js";
 import { maxPatchBytes } from "./patch.js";
@@ -37,7 +42,7 @@ import { maxPatchBytes } from "./patch.js";
 
 const server = new McpServer({
     name: "gyo-agents",
-    version: "1.1.0",
+    version: "1.0.0",
 });
 
 // ─── Resources ────────────────────────────────────────────────────────────────
@@ -857,74 +862,6 @@ server.tool(
     }
 );
 
-// ─── snapshot_config ──────────────────────────────────────────────────────────
-
-server.tool(
-    "snapshot_config",
-    [
-        "Capture a five-dimension baseline snapshot of the current project state.",
-        "Call this immediately after generating agent config files (CLAUDE.md, .clinerules, etc.) to lock in a baseline.",
-        "Future calls to sync_agent_config will diff the live project against this baseline.",
-        "",
-        "What is captured:",
-        "  - Directory structure: top-level dirs (ignoring node_modules, dist, vendor, etc.)",
-        "  - Dependency manifests: SHA-256 hash of package.json, composer.json, go.mod, etc.",
-        "  - Git state: HEAD hash, commit count, commit style (conventional vs freeform), ticket prefixes, top verbs",
-        "  - Domain focus: top 8 commit keyword areas",
-        "  - Agent config inventory: which of 13 known config files exist",
-        "",
-        "Snapshots persist to ~/.gyo-agents/snapshots/{projectHash}.json — one file per project.",
-    ].join("\n"),
-    {
-        projectPath: z.string().min(1).describe("Absolute path to the project root."),
-        label: z.string().optional().describe("Optional label for this snapshot (e.g., 'after initial generation', 'v2 refactor'). Default: 'baseline'."),
-    },
-    async ({ projectPath, label }) => {
-        const snapshot = snapshotConfig(projectPath, label);
-        return { content: [{ type: "text", text: formatSnapshotSummary(snapshot) }] };
-    }
-);
-
-// ─── sync_agent_config ────────────────────────────────────────────────────────
-
-server.tool(
-    "sync_agent_config",
-    [
-        "Compare the current project state against the last snapshot to detect config drift.",
-        "Call this any time your agent configs might be stale (days or weeks after generation).",
-        "",
-        "Returns one of three results:",
-        "  ✅ Up to date — nothing meaningful changed",
-        "  Targeted patches — severity-rated change list (🔴 High / 🟡 Medium / 🔵 Low) + per-section fix instructions",
-        "  Regeneration recommended — 2+ high-severity changes; faster to re-run generate_full_agent_context",
-        "",
-        "Change signals detected:",
-        "  - New top-level directories (🔴 High) → Update Project Structure / Architecture section",
-        "  - Removed directories (🟡 Medium) → Update Project Structure section",
-        "  - Dependency manifest changed (🟡 Medium) → Update Architecture / Essential Commands",
-        "  - Commit style evolved: conventional ↔ freeform (🔴 High) → Update Commit Format + Developer Style",
-        "  - New ticket prefix pattern (🔴 High) → Update Commit Format section",
-        "  - 30+ new commits since snapshot (🟡 Medium) → Refresh Developer Style section",
-        "  - Domain focus shift: 2+ new top keywords (🟡 Medium) → Update Domain Focus table",
-        "  - Agent config files added/removed (🔵 Low) → Update AGENTS.md rules reference",
-        "",
-        "Requires a prior snapshot_config call for the same projectPath.",
-    ].join("\n"),
-    {
-        projectPath: z.string().min(1).describe("Absolute path to the project root."),
-        outputFormat: z.enum(["markdown", "json"]).optional().describe("Output format. Default: 'markdown'."),
-    },
-    async ({ projectPath, outputFormat = "markdown" }) => {
-        const report = syncAgentConfig(projectPath);
-        const text = outputFormat === "json"
-            ? JSON.stringify(report, null, 2)
-            : formatSyncReport(report);
-        return { content: [{ type: "text", text }] };
-    }
-);
-
-// ─── Start server ─────────────────────────────────────────────────────────────
-
 // ─── Twin System Prompt (IDE-agnostic proactive behavior) ─────────────────────
 
 server.tool(
@@ -1145,6 +1082,108 @@ server.resource("Digital Twin System Prompt", "gyo-agents://twin-system-prompt",
     };
 });
 
+// ─── snapshot_config ──────────────────────────────────────────────────────────
+
+server.tool(
+    "snapshot_config",
+    [
+        "Capture a baseline snapshot of the current project state and persist it to ~/.gyo-agents/snapshots/.",
+        "",
+        "Call this immediately after generating agent config files (CLAUDE.md, .clinerules, .cursor/rules/, etc.).",
+        "The snapshot records five dimensions of the project at that exact moment:",
+        "  1. Top-level directory structure",
+        "  2. Dependency manifest hashes (package.json, composer.json, go.mod, etc.)",
+        "  3. Git HEAD, commit count, commit style, and top domain keywords",
+        "  4. Which agent config files exist (CLAUDE.md, .clinerules, .windsurfrules, etc.)",
+        "",
+        "Future calls to `sync_agent_config` will diff the live project against this baseline and",
+        "return targeted patch instructions — only the sections that actually changed.",
+        "",
+        "One snapshot per project, keyed by a hash of the absolute path. Re-running overwrites the previous baseline.",
+    ].join("\n"),
+    {
+        projectPath: z
+            .string()
+            .min(1)
+            .describe(
+                "Absolute path to the root of the project. Example: '/Users/you/Development/my-project'"
+            ),
+        label: z
+            .string()
+            .optional()
+            .describe(
+                "Optional human-readable label for this snapshot, e.g. 'after initial generation' or 'v2 rewrite'. Stored for reference."
+            ),
+    },
+    async ({ projectPath, label }) => {
+        try {
+            const snapshot = takeSnapshot(projectPath, label);
+            const text = formatSnapshotConfirmation(snapshot);
+            return { content: [{ type: "text" as const, text }] };
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: `Failed to take snapshot: ${msg}\n\nMake sure the projectPath exists and is accessible.`,
+                }],
+            };
+        }
+    }
+);
+
+// ─── sync_agent_config ────────────────────────────────────────────────────────
+
+server.tool(
+    "sync_agent_config",
+    [
+        "Compare the current project state against the stored baseline snapshot and return a targeted patch report.",
+        "",
+        "This is the core of the Living Config Auto-Updater. It detects meaningful drift across five dimensions:",
+        "  1. New or removed top-level directories → flags stale 'Project Structure' sections",
+        "  2. Changed dependency manifests → flags stale 'Architecture' / 'Essential Commands' sections",
+        "  3. Commit growth (30+ new commits) → flags stale 'Developer Style' section",
+        "  4. Commit style evolution (conventional ↔ freeform, new ticket prefixes) → flags 'Commit Format'",
+        "  5. Domain focus shift (new top commit keywords) → flags 'Domain Focus' table",
+        "",
+        "For each change it produces a 'Suggested Patch': which config files to edit, which section to update,",
+        "and exactly what to do — without requiring a full regeneration unless the changes are too widespread.",
+        "",
+        "Returns '✅ up to date' if nothing meaningful has changed.",
+        "Returns an error message if no snapshot exists yet (call `snapshot_config` first).",
+        "",
+        "Workflow:",
+        "  1. Generate agent configs using any get_prompt_* tool",
+        "  2. Call snapshot_config to establish baseline",
+        "  3. Work on your project (days/weeks later...)",
+        "  4. Call sync_agent_config — get a precise list of what to patch",
+        "  5. Apply patches, then call snapshot_config again to update the baseline",
+    ].join("\n"),
+    {
+        projectPath: z
+            .string()
+            .min(1)
+            .describe(
+                "Absolute path to the root of the project. Must match the path used when snapshot_config was called. Example: '/Users/you/Development/my-project'"
+            ),
+    },
+    async ({ projectPath }) => {
+        try {
+            const report = syncAgentConfig(projectPath);
+            const text = formatSyncReport(report);
+            return { content: [{ type: "text" as const, text }] };
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: `Failed to sync config: ${msg}`,
+                }],
+            };
+        }
+    }
+);
+
 async function main() {
     if (process.argv[2] === "guardrail") {
         try {
@@ -1158,7 +1197,7 @@ async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error(
-        `GYO-AGENTS MCP Server v1.1.0 started (stdio transport)\n` +
+        `GYO-AGENTS MCP Server v1.0.0 started (stdio transport)\n` +
         `  ✦ ${TOOLS.length} get_prompt_* tools (one per AI coding tool)\n` +
         `  ✦ search_prompts — RAG search across all prompts\n` +
         `  ✦ analyze_git_style_on_the_fly — live git history analysis\n` +

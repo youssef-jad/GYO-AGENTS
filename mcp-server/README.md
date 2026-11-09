@@ -73,17 +73,17 @@ Merge the [Stop hook example](../examples/guardrails-hooks/stop-hook.json) into 
 
 Review and trust the project and hook in the client. In Codex, use `/hooks` to review and trust the exact definition. The hook runs when the agent tries to finish a turn. It checks staged and unstaged tracked changes against `HEAD` and sends findings back to the agent once. It checks again before the turn ends and reports any remaining findings. Include new files through your normal staging workflow so the hook can see them.
 
+### Living Config Auto-Updater
+| Tool | Description |
+|------|-------------|
+| `snapshot_config` | Capture a baseline snapshot of the project right after generating agent configs |
+| `sync_agent_config` | Diff the live project against the snapshot — get targeted patch suggestions for only what changed |
+
 ### Convention Enforcement (Laravel / PHP)
 | Tool | Enforces |
 |------|----------|
 | `validate_api_response` | `Json::item()` over `response()->json()` — *api-development.md* |
 | `check_cache_usage` | `cache_store('read/write')` over `Cache::` — *guardrails.md* |
-
-### Config Freshness (Living Auto-Updater)
-| Tool | Description |
-|------|-------------|
-| `snapshot_config` | Capture a five-dimension project baseline after generating config files |
-| `sync_agent_config` | Diff live project vs baseline — returns targeted patches or regeneration recommendation |
 
 ### Resources
 | URI | Description |
@@ -173,47 +173,51 @@ claude mcp add gyo-agents -- node /absolute/path/to/GYO-AGENTS/mcp-server/dist/i
         ↓ (full prompt text)
 3. Paste prompt into your AI tool → it generates native config files
         ↓
-4. snapshot_config(projectPath)           ← lock in the baseline
+4. snapshot_config(projectPath)          ← lock in the baseline
         ↓
 5. [Optional] validate_api_response(projectPath) + check_cache_usage(projectPath)
-        ↓
-   Work on your project for days/weeks...
-        ↓
-6. sync_agent_config(projectPath)         ← get targeted patch report
-        ↓
-   Apply patches → snapshot_config()     ← advance the baseline
 ```
 
 ---
 
 ## Keeping Configs Fresh
 
-Agent config files go stale. The moment you merge a new module, adopt a new pattern, or change your commit style, your `CLAUDE.md` / `.clinerules` / `.cursor/rules/` drift silently from reality.
+Agent config files go stale as the codebase evolves — new modules, dependency upgrades, shifting commit style. The **Living Config Auto-Updater** solves this without a full regeneration.
 
-**`snapshot_config`** captures a five-dimension baseline of your project:
+### Initial setup (run once after generating configs)
 
-| Dimension | What's tracked |
-|---|---|
-| Directory structure | Top-level dirs (ignoring `node_modules`, `dist`, `vendor`, etc.) |
-| Dependency manifests | SHA-256 of `package.json`, `composer.json`, `go.mod`, etc. |
-| Git state | HEAD hash, commit count, commit style, ticket prefixes, top verbs |
-| Domain focus | Top 8 commit keyword areas |
-| Agent config inventory | Which of 13 known config files exist |
+```
+snapshot_config("/path/to/your/project", label: "initial generation")
+```
 
-**`sync_agent_config`** diffs the live project against the baseline and returns:
+This records a baseline across five dimensions: directory structure, dependency manifests, git HEAD and commit style, domain keyword distribution, and which agent config files exist.
 
-| Change | Severity | Suggested fix |
-|---|---|---|
-| New top-level directories | 🔴 High | Update Project Structure section |
+### Staying in sync (run whenever configs might be stale)
+
+```
+sync_agent_config("/path/to/your/project")
+```
+
+Returns one of:
+- **✅ Up to date** — nothing meaningful has changed, no action needed
+- **Targeted patches** — a list of exactly which sections to update in which files, with precise instructions
+- **Regeneration recommended** — too many high-impact changes; re-running the full prompt will be faster
+
+### What it detects
+
+| Signal | Severity | Action |
+|--------|----------|--------|
+| New top-level directories | 🔴 High | Update Project Structure / Architecture section |
 | Removed directories | 🟡 Medium | Update Project Structure section |
 | Dependency manifest changed | 🟡 Medium | Update Architecture / Essential Commands |
-| Commit style evolved | 🔴 High | Update Commit Format + Developer Style |
-| New ticket prefix pattern | 🔴 High | Update Commit Format section |
-| 30+ new commits | 🟡 Medium | Refresh Developer Style section |
-| Domain focus shift (2+ new keywords) | 🟡 Medium | Update Domain Focus table |
+| Commit style evolved (conventional ↔ freeform) | 🔴 High | Update Commit Format + Developer Style |
+| 30+ new commits since snapshot | 🟡 Medium | Refresh Developer Style section |
+| Domain focus shift (new top keywords) | 🟡 Medium | Update Domain Focus table |
 | Agent config files added/removed | 🔵 Low | Update AGENTS.md rules reference |
 
-When 2+ high-severity changes are detected, `sync_agent_config` recommends a full regeneration instead of patching.
+### After patching
+
+Re-run `snapshot_config` to advance the baseline to the new state.
 
 ---
 
