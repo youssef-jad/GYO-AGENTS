@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { checkWorkingTree } from "./guardrails.js";
@@ -11,21 +10,7 @@ const stopEvent = z.object({
 
 export function runGuardrailHook(input: string): { decision?: "block"; reason?: string; systemMessage?: string } {
     const event = stopEvent.parse(JSON.parse(input));
-    let projectPath: string;
-    try {
-        projectPath = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-            cwd: event.cwd,
-            encoding: "utf-8",
-            stdio: ["ignore", "pipe", "pipe"],
-            timeout: 3000,
-        }).trimEnd();
-    } catch (error) {
-        const gitError = error as { status?: number; stderr?: string };
-        if (gitError.status === 128 && gitError.stderr?.includes("not a git repository")) return {};
-        throw error;
-    }
-
-    const report = checkWorkingTree(projectPath);
+    const report = checkWorkingTree(event.cwd);
     if (!report?.violationCount) return {};
 
     const summary = `GYO Guardrails found ${report.violationCount} violation(s) in the working diff.`;

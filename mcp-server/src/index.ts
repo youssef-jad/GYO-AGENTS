@@ -599,7 +599,7 @@ server.tool(
 
 server.tool(
     "get_task_rules",
-    "Get approved guardrails for the files you plan to edit in this project.",
+    "Get committed team and approved local guardrails for the files you plan to edit.",
     {
         projectPath: guardrailProject,
         paths: z.array(z.string().min(1).max(1024)).min(1).max(200).describe("Repository-relative file paths."),
@@ -611,7 +611,7 @@ server.tool(
 
 server.tool(
     "check_changes",
-    "Check added lines in a standard Git patch against this project's approved guardrails. Reports rule IDs, file paths and destination line numbers.",
+    "Check added lines in a standard Git patch against committed team and approved local guardrails. Reports rule IDs, file paths and destination line numbers.",
     {
         projectPath: guardrailProject,
         patch: z.string().max(maxPatchBytes).describe("Standard Git diff with a/ and b/ prefixes, without colors, text conversion or external diff."),

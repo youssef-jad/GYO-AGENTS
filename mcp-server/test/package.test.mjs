@@ -204,7 +204,7 @@ test("installed package release checks", { timeout: 180_000 }, async t => {
         assert.equal(existsSync(join(root, "watcher-marker")), false);
     });
 
-    await t.test("an approved correction becomes a scoped diff check across two MCP clients and the CLI", async () => {
+    await t.test("local and team guardrails agree across MCP, hooks, the working tree and CI", async () => {
         const project = join(root, "guardrail-project");
         const otherProject = join(root, "guardrail-other");
         const service = "app/Services/Billing/New service.php";
@@ -310,6 +310,72 @@ test("installed package release checks", { timeout: 180_000 }, async t => {
         assert.equal(incomplete.status, 2, incomplete.stdout);
         assert.equal(cli(project, ["remove", rule.id]).status, 0);
         assert.deepEqual(await taskRules(project), []);
+
+        const policyPath = ".gyo/guardrails.json";
+        mkdirSync(join(project, ".gyo"));
+        writeFileSync(join(project, policyPath), exported.stdout);
+        writeFileSync(join(project, ".gitignore"), "ignored.php\n");
+        git(project, "add", "--", policyPath, ".gitignore");
+        assert.deepEqual(await taskRules(project), []);
+        git(project, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Share team policy");
+
+        const teammate = join(root, "teammate-checkout");
+        git(root, "clone", "--quiet", "--", project, teammate);
+        const teammateProfile = join(root, "teammate-profile");
+        const teammateCli = (args, input) => spawnSync(process.execPath, [installedEntry, "guardrail", ...args], {
+            cwd: teammate, input, encoding: "utf-8", timeout: 10_000,
+            env: { ...process.env, GYO_AGENTS_DATA_DIR: teammateProfile },
+        });
+        assert.deepEqual((await taskRules(teammate)).map(({ id, source }) => ({ id, source })), [
+            { id: rule.id, source: "team" },
+        ]);
+        assert.deepEqual(JSON.parse(teammateCli(["export"]).stdout).rules, []);
+        assert.deepEqual(JSON.parse(teammateCli(["list"]).stdout).map(active => active.source), ["team"]);
+
+        const newService = "app/Services/Billing/Untracked service.php";
+        const teamFinding = { ruleId: rule.id, path: newService, line: 2, lesson };
+        writeFileSync(join(teammate, newService), `<?php\n${forbiddenLiteral}`);
+        writeFileSync(join(teammate, "app/Services/ignored.php"), forbiddenLiteral);
+        writeFileSync(join(teammate, "app/Services/binary.php"), `\0${forbiddenLiteral}`);
+        const outside = join(root, "outside-guardrail.php");
+        writeFileSync(outside, forbiddenLiteral);
+        symlinkSync(outside, join(teammate, "app/Services/link.php"));
+        writeFileSync(join(teammate, policyPath), '{"version":1,"rules":[]}');
+        git(teammate, "add", "--", policyPath);
+
+        const index = readFileSync(join(teammate, ".git", "index"));
+        const working = teammateCli(["check", "--working-tree"]);
+        assert.equal(working.status, 1, working.stderr);
+        assert.deepEqual(JSON.parse(working.stdout).violations, [teamFinding]);
+        const teamHook = teammateCli(["hook"], JSON.stringify({
+            cwd: teammate, hook_event_name: "Stop", stop_hook_active: false,
+        }));
+        assert.equal(teamHook.status, 0, teamHook.stderr);
+        assert.equal(JSON.parse(teamHook.stdout).decision, "block");
+        assert.match(JSON.parse(teamHook.stdout).reason, /Untracked service.php:2/);
+        assert.deepEqual(readFileSync(join(teammate, ".git", "index")), index);
+
+        git(teammate, "add", "--", newService);
+        const teamPatch = git(teammate, "-c", "core.quotePath=false", "diff", "--no-color",
+            "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "HEAD", "--").toString("utf-8");
+        const ci = teammateCli(["check", "--rules", ruleFile], teamPatch);
+        assert.equal(ci.status, 1, ci.stderr);
+        assert.deepEqual(JSON.parse(ci.stdout), JSON.parse(working.stdout));
+        assert.deepEqual((await check(teammate, teamPatch)).violations, [teamFinding]);
+
+        writeFileSync(join(teammate, newService), "<?php\nuse App\\CacheWrapper;\n");
+        const cleaned = teammateCli(["check", "--working-tree"]);
+        assert.equal(cleaned.status, 0, cleaned.stderr);
+        assert.equal(JSON.parse(cleaned.stdout).violationCount, 0);
+
+        writeFileSync(join(teammate, policyPath), "{ broken JSON");
+        git(teammate, "add", "--", policyPath);
+        git(teammate, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test",
+            "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Invalid team policy");
+        const invalid = teammateCli(["check", "--working-tree"]);
+        assert.equal(invalid.status, 2, invalid.stdout);
+        assert.match(invalid.stderr, /Invalid committed \.gyo\/guardrails\.json/);
     });
 
     await t.test("malformed existing storage is preserved and writers fail closed", async () => {

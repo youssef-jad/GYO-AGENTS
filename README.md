@@ -46,11 +46,15 @@ node "$gyo_entry" guardrail approve RULE_ID
 
 To run checks automatically, merge the [Stop hook example](examples/guardrails-hooks/stop-hook.json) into `.claude/settings.local.json` for Claude Code or `.codex/hooks.json` for Codex. If you built from a checkout, point the hook command to `node "/absolute/path/to/GYO-AGENTS/mcp-server/dist/index.js" guardrail hook`. In Codex, use `/hooks` to review and trust the hook.
 
-When the agent tries to finish, the hook checks staged and unstaged tracked changes against `HEAD`. A violation gives the agent one repair pass, followed by a recheck. Include new files in the diff through your normal staging workflow. Each rule checks for exact, case-sensitive text on added lines in matching files.
+When the agent tries to finish, the hook checks staged and unstaged changes against `HEAD`, plus new, non-ignored files. A violation gives the agent one repair pass, followed by a recheck. Each rule checks for exact, case-sensitive text on added lines in matching files.
 
-In a synthetic PHP repo, Claude Code and Codex both fixed the same seeded Cache facade import after the hook ran. Codex received a neutral task prompt and made zero MCP calls. Both final diffs passed Guardrails and the PHP smoke test.
+### Team Guardrails
 
-[Full Guardrails guide, manual checks, and CI export](mcp-server/README.md#gyo-guardrails)
+Export approved rules to `.gyo/guardrails.json` and review them in a PR. After merge, the hook and CLI load the committed rules in every checkout. CI can check a PR against the rules from its trusted base commit. [Team setup and CI example](mcp-server/README.md#team-guardrails)
+
+To run the same local check as the hook, use `node "$gyo_entry" guardrail check --working-tree` from the target repo.
+
+**Verified in Claude Code and Codex.** In separate fresh clones with empty local rule stores, both agents received a prompt to run a PHP smoke test. Their Stop hooks read the team policy, caught the forbidden Cache facade import in an untracked service, and sent the agents back to fix it. Both checks then reported zero violations and both smoke tests passed. The file stayed untracked throughout.
 
 ## What else you can do
 

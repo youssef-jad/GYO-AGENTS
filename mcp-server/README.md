@@ -63,15 +63,33 @@ git -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv --src-pr
   gyo-agents-mcp guardrail check
 ```
 
-Use a patch that includes every change you want checked. The command above covers staged and unstaged changes to tracked files. Include new files in the patch through your normal staging workflow. The checker takes standard Git text patches with `a/` and `b/` prefixes up to 2 MiB. It skips binary files and matches literal text on a single line. The CLI exits with `0` for a clean check, `1` for violations, and `2` for invalid input or configuration.
+Use a patch that includes every change you want checked. For a local check that also includes non-ignored untracked files, run `gyo-agents-mcp guardrail check --working-tree`. The checker takes standard Git text patches with `a/` and `b/` prefixes up to 2 MiB. It skips binary files and matches literal text on a single line. The CLI exits with `0` for a clean check, `1` for violations, and `2` for invalid input or configuration.
 
-For CI or another checkout, run `gyo-agents-mcp guardrail export` and review the resulting JSON before sharing it. The export includes approved definitions and their lesson text. Pipe the PR diff into `gyo-agents-mcp guardrail check --rules <file>` using a rules file from a trusted revision.
+#### Team Guardrails
+
+Run `gyo-agents-mcp guardrail export` from the checkout where you approved the rules. To create the team policy, put the reviewed JSON in `.gyo/guardrails.json` and submit it in a PR. For an existing policy, merge the selected entries into its `rules` array. The export includes approved local definitions and their lesson text, so review both before sharing.
+
+The MCP tools, CLI, and Stop hook load the policy from the checkout's committed `HEAD`. They combine it with approved local rules. If a rule ID appears in both places, the team definition wins. Pending local proposals and edits to the policy file in the working tree take effect after approval or commit, respectively. Use `guardrail list` to see team rules alongside local rules and drafts.
+
+In CI, check the PR against rules from its trusted base commit. Set `BASE_SHA` to the base commit and fetch it before running the check.
+
+```bash
+set -o pipefail
+gyo_rules_file=$(mktemp)
+trap 'rm -f "$gyo_rules_file"' EXIT
+git show "${BASE_SHA}:.gyo/guardrails.json" > "$gyo_rules_file"
+git -c core.quotePath=false diff --no-color --no-ext-diff --no-textconv \
+  --src-prefix=a/ --dst-prefix=b/ "$BASE_SHA" HEAD |
+  gyo-agents-mcp guardrail check --rules "$gyo_rules_file"
+```
+
+`--rules` uses the supplied policy for that check. This example assumes the base commit already includes the team policy.
 
 #### Automatic checks in Claude Code and Codex
 
 Merge the [Stop hook example](../examples/guardrails-hooks/stop-hook.json) into your project's `.claude/settings.local.json` for Claude Code, or `.codex/hooks.json` for Codex. Keep existing hooks and settings. If the binary is not on the client's PATH, replace the command with `node "/absolute/path/to/GYO-AGENTS/mcp-server/dist/index.js" guardrail hook`. Start the client with the same `GYO_AGENTS_DATA_DIR` used for approval if you use a custom profile.
 
-Review and trust the project and hook in the client. In Codex, use `/hooks` to review and trust the exact definition. The hook runs when the agent tries to finish a turn. It checks staged and unstaged tracked changes against `HEAD` and sends findings back to the agent once. It checks again before the turn ends and reports any remaining findings. Include new files through your normal staging workflow so the hook can see them.
+Review and trust the project and hook in the client. In Codex, use `/hooks` to review and trust the exact definition. The hook runs when the agent tries to finish a turn. It checks staged and unstaged changes against `HEAD` and includes matching, non-ignored untracked files. It sends findings back to the agent once, then rechecks and reports any remaining findings. The check reads the working tree without staging files. It skips untracked symlinks and applies the 2 MiB limit to the patch and matching untracked text together.
 
 ### Living Config Auto-Updater
 | Tool | Description |

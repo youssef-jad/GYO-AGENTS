@@ -1,11 +1,11 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { correctionMap } from "./correction-map.js";
 import { JsonStore, scopeKey } from "./json-store.js";
-import { addedLines, maxPatchBytes, repoPathParts } from "./patch.js";
+import { committedTeamRules, gitHead, gitRoot, teamRulesPath, workingAddedLines } from "./guardrail-git.js";
+import { addedLines, repoPathParts, type AddedLine } from "./patch.js";
 
 const ruleDefinition = z.object({
     id: z.string().uuid(),
@@ -116,9 +116,44 @@ function approvedGuardrails(projectPath: string): Guardrail[] {
     return listGuardrails(projectPath).filter(rule => typeof rule.approvedAt === "string" && rule.approvedAt.length > 0);
 }
 
-export function getTaskRules(projectPath: string, paths: string[]): Guardrail[] {
+const exportedRules = z.object({ version: z.literal(1), rules: z.array(ruleDefinition) });
+
+function readRules(rulesJson: string): RuleDefinition[] {
+    const { rules } = exportedRules.parse(JSON.parse(rulesJson));
+    if (new Set(rules.map(rule => rule.id)).size !== rules.length) {
+        throw new Error("Guardrail IDs must be unique.");
+    }
+    return rules;
+}
+
+function teamGuardrails(root: string, head: string | undefined) {
+    if (!head) return [];
+    const contents = committedTeamRules(root, head);
+    if (contents === undefined) return [];
+    try {
+        return readRules(contents).map(rule => ({ ...rule, source: "team" as const }));
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Invalid committed ${teamRulesPath}: ${message}`);
+    }
+}
+
+function combinedGuardrails<T extends RuleDefinition>(
+    projectPath: string, local: T[], revision?: { root: string; head?: string },
+) {
+    const root = revision?.root ?? gitRoot(projectPath);
+    const team = root ? teamGuardrails(root, revision ? revision.head : gitHead(root)) : [];
+    const sharedIds = new Set(team.map(rule => rule.id));
+    return [...team, ...local.filter(rule => !sharedIds.has(rule.id))];
+}
+
+export function listProjectGuardrails(projectPath: string) {
+    return combinedGuardrails(projectPath, listGuardrails(projectPath));
+}
+
+export function getTaskRules(projectPath: string, paths: string[]) {
     for (const path of paths) repoPathParts(path);
-    return approvedGuardrails(projectPath).filter(rule => {
+    return combinedGuardrails(projectPath, approvedGuardrails(projectPath)).filter(rule => {
         const pattern = compileRule(rule);
         return paths.some(path => pattern.test(path));
     });
@@ -131,42 +166,38 @@ export function exportGuardrails(projectPath: string) {
     };
 }
 
-const exportedRules = z.object({ version: z.literal(1), rules: z.array(ruleDefinition) });
-
-export function checkChanges(projectPath: string, patch: string) {
-    return checkPatch(patch, approvedGuardrails(projectPath));
+function compileRules(definitions: RuleDefinition[]) {
+    return definitions.map(rule => ({ rule, path: compileRule(rule) }));
 }
 
-export function checkWorkingTree(projectPath: string) {
-    const rules = approvedGuardrails(projectPath);
-    if (!rules.length) return;
-    const patch = execFileSync("git", [
-        "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff", "--no-textconv",
-        "--src-prefix=a/", "--dst-prefix=b/", "--no-relative", "--submodule=short", "HEAD", "--",
-    ], {
-        cwd: projectPath,
-        encoding: "utf-8",
-        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-        maxBuffer: maxPatchBytes,
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout: 5000,
-    });
-    return checkPatch(patch, rules);
+export function checkChanges(projectPath: string, patch: string) {
+    const rules = combinedGuardrails(projectPath, approvedGuardrails(projectPath));
+    return checkLines(addedLines(patch), compileRules(rules));
+}
+
+export function checkWorkingTree(cwd: string) {
+    const root = gitRoot(cwd);
+    if (!root) return;
+    const head = gitHead(root);
+    const rules = compileRules(combinedGuardrails(root, approvedGuardrails(root), { root, head }));
+    const lines = rules.length === 0 ? [] : workingAddedLines(root, head, path =>
+        rules.some(rule => rule.path.test(path))
+    );
+    return checkLines(lines, rules);
 }
 
 export function checkExportedGuardrails(rulesJson: string, patch: string) {
-    const { rules } = exportedRules.parse(JSON.parse(rulesJson));
-    return checkPatch(patch, rules);
+    return checkLines(addedLines(patch), compileRules(readRules(rulesJson)));
 }
 
-function checkPatch(patch: string, definitions: RuleDefinition[]) {
-    const rules = definitions.map(rule => ({ rule, path: compileRule(rule) }));
+function checkLines(lines: Iterable<AddedLine>, rules: ReturnType<typeof compileRules>) {
     const violations: Array<{ ruleId: string; path: string; line: number; lesson: string }> = [];
     let checkedAddedLines = 0;
     let violationCount = 0;
     let currentPath: string | undefined;
     let matchingRules: typeof rules = [];
-    for (const line of addedLines(patch)) {
+    for (const line of lines) {
+        if (line.path === teamRulesPath) continue;
         if (line.path !== currentPath) {
             currentPath = line.path;
             matchingRules = rules.filter(rule => rule.path.test(line.path));
